@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>AUTOCLIMB</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="stage">
+    <canvas id="game" width="1280" height="720"></canvas>
+    <div class="scanlines"></div>
+
+    <header class="hud">
+      <div class="title">AUTOCLIMB</div>
+
+      <div class="roster">
+        <div class="pcard p1">
+          <span class="pname">NAYKILLA</span>
+          <span class="pstat">S <b id="p1-summits">0</b></span>
+          <span class="pstat">F <b id="p1-falls">0</b></span>
+        </div>
+        <div class="pcard p2">
+          <span class="pname">USHER</span>
+          <span class="pstat">S <b id="p2-summits">0</b></span>
+          <span class="pstat">F <b id="p2-falls">0</b></span>
+        </div>
+        <div class="pcard p3">
+          <span class="pname">ADAM <span id="p3-live" class="live-dot" hidden>&#9679;</span></span>
+          <span class="pstat">S <b id="p3-summits">0</b></span>
+          <span class="pstat">F <b id="p3-falls">0</b></span>
+        </div>
+      </div>
+
+      <button id="speed-btn" class="speed-btn" type="button">1x</button>
+    </header>
+
+    <footer class="foot">
+      <b>A/D</b> move &middot; <b>W/space</b> jump &middot; <b>X</b> hammer &middot; <b>E</b> hop in/out of a basket &middot; quiet 11s = carried
+    </footer>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

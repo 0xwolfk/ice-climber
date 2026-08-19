@@ -1,0 +1,162 @@
+/* palette follows a 60/30/10 split: --bg dominates (~60%), --panel + --ink-dim
+   form the structural layer (~30%), --accent is the one reserved highlight (~10%).
+   --p1/--p2/--p3 are functional identity tags, not decorative accents.
+   type scale: 16px is the UI floor; title/labels step up from there, matching
+   a standard small/base/heading hierarchy rather than tiny retro-only sizes. */
+:root {
+  --bg: #0b0e1a;
+  --panel: #131829;
+  --panel-line: #2a3358;
+  --ink: #eef3ff;
+  --ink-dim: #9fb0d4;
+  --accent: #ffd166;
+  --p1: #ff6bcb;
+  --p2: #4d8dff;
+  --p3: #c8ff6b;
+  --fs-base: 17px;
+  --fs-sm: 15px;
+  --fs-lg: 22px;
+  --fs-xl: 28px;
+  font-family: 'VT323', 'Courier New', monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  overflow: hidden; /* the whole experience fills one screen, never scrolls */
+}
+
+.stage {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+}
+
+#game {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* rendered at native/device resolution now (see game.js), so no upscaling
+     to compensate for — default smooth scaling, not a pixelated stretch */
+}
+
+.scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0) 0px,
+    rgba(0,0,0,0) 1px,
+    rgba(0,0,0,0.14) 2px,
+    rgba(0,0,0,0.14) 3px
+  );
+  mix-blend-mode: multiply;
+}
+
+.hud {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  background: rgba(11, 14, 26, 0.78);
+  border-bottom: 1px solid var(--panel-line);
+  z-index: 2;
+}
+
+.title {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: var(--fs-xl);
+  color: var(--accent);
+  text-shadow: 2px 2px 0 #000;
+}
+
+.roster {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.pcard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  border-left: 5px solid var(--ink-dim);
+  padding: 6px 14px;
+  font-size: var(--fs-base);
+  line-height: 1.2;
+}
+
+.pcard.p1 { border-left-color: var(--p1); }
+.pcard.p2 { border-left-color: var(--p2); }
+.pcard.p3 { border-left-color: var(--p3); }
+
+.pname {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--ink);
+}
+
+.pcard.p1 .pname { color: var(--p1); }
+.pcard.p2 .pname { color: var(--p2); }
+.pcard.p3 .pname { color: var(--p3); }
+
+.pstat { color: var(--ink-dim); }
+.pstat b { color: var(--ink); font-weight: normal; }
+
+.live-dot {
+  color: var(--p3);
+  font-size: var(--fs-sm);
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink { 50% { opacity: 0.2; } }
+
+.speed-btn {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: 15px;
+  background: var(--panel);
+  color: var(--accent);
+  border: 2px solid var(--accent);
+  box-shadow: 3px 3px 0 #000;
+  padding: 10px 18px;
+  cursor: pointer;
+  min-width: 64px;
+}
+
+.speed-btn:hover { background: #1c2440; }
+.speed-btn:active { transform: translate(3px, 3px); box-shadow: 0 0 0 #000; }
+
+.foot {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  text-align: center;
+  padding: 10px 16px;
+  background: rgba(11, 14, 26, 0.78);
+  border-top: 1px solid var(--panel-line);
+  color: var(--ink-dim);
+  font-size: var(--fs-base);
+  z-index: 2;
+}
+
+.foot b { color: var(--accent); }
+
+@media (max-width: 640px) {
+  :root { --fs-base: 15px; --fs-sm: 13px; --fs-lg: 18px; --fs-xl: 20px; }
+  .pname { font-size: 10px; }
+  .hud { padding: 8px 12px; gap: 8px; }
+  .foot { padding: 6px 10px; }
+}
