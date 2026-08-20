@@ -145,6 +145,9 @@ html, body {
 .speed-btn:hover { background: #1c2440; }
 .speed-btn:active { transform: translate(3px, 3px); box-shadow: 0 0 0 #000; }
 
+/* icon-only music toggle — on/off reads through color+opacity, not a text label */
+#music-btn.muted { color: var(--ink-dim); border-color: var(--ink-dim); opacity: 0.55; }
+
 .foot {
   position: absolute;
   bottom: 0; left: 0; right: 0;

@@ -62,6 +62,11 @@
   // moment you release early or start falling, so it never feels floaty.
   const ASCEND_MULT = 0.6, DESCEND_MULT = 1.75;
   const JUMP_VY = -340 * K * Math.sqrt(ASCEND_MULT);
+  // full-hold time-of-flight to clear one ROW_H of climb — velocity and both
+  // gravity phases all carry the same K factor, so this comes out in real
+  // seconds regardless of screen size; used to project a moving platform's
+  // future position at the moment a jump aimed at it will actually land
+  const JUMP_AIRTIME = 0.56;
   const MOVE_SPEED = 140 * K;
   const AIR_MOVE_SPEED = 122 * K;
   const MELEE_RANGE = 20 * K;
@@ -109,7 +114,7 @@
     topi: '#7bffc4', topiDark: '#1f7a56', enemyEye: '#0b1024',
     nit: '#ffb37b', nitDark: '#a5581f',
     veg: '#ffd166', vegLeaf: '#7bffc4',
-    durian: '#c9b23a', durianSpike: '#8a7a1f',
+    durian: '#8a9a3f', durianSpike: '#4f5f24', durianHi: '#b9c96a',
     condor: '#eef3ff', condorAccent: '#ffd166',
     bear: '#f4f7ff', bearShade: '#c3cdea',
     basket: '#b98a4b', basketDark: '#7a5a2f',
@@ -712,16 +717,40 @@
 
     // where the NEXT jump actually needs to land — every mid-row is a short
     // offset platform now (like the real game's zigzag ledges), so reaching it
-    // almost always means crossing real horizontal distance, not just going up
+    // almost always means crossing real horizontal distance, not just going up.
+    // While still grounded, track the platform's LIVE position every tick
+    // rather than a single stale prediction — that's what lets a drifting
+    // floorboard actually be "waited for": alignment below only passes once
+    // the real, current gap is closeable, so the AI holds position and keeps
+    // re-tracking until the platform genuinely swings into range.
+    //
+    // The landing spot itself is picked by scoring a few candidate points —
+    // left edge / center / right edge — the same shallow-evaluation idea a
+    // chess engine uses to compare a handful of legal moves, rather than
+    // committing to a single guessed heuristic: shorter hop wins some credit,
+    // setting up the FOLLOWING jump (two rows ahead) wins more, and a patrol
+    // currently standing on the landing row is a hard penalty.
     let trueTargetX = p.x;
     if (nextRow && !nextRow.full) {
       const np = nextRow.platform;
-      const predictedX = np.drift
-        ? predictBounceX(np.x, np.drift.dir, np.drift.speed, 0.5, np.drift.min, np.drift.max)
-        : np.x;
-      const center = clamp(predictedX + np.w / 2, PAD + 8 * K, W - PAD - 8 * K);
-      const edge = p.x < center ? predictedX + np.w - 8 * K : predictedX + 8 * K;
-      trueTargetX = rerouting ? edge : center;
+      const leftEdge = np.x + 8 * K, rightEdge = np.x + np.w - 8 * K;
+      const center = clamp(np.x + np.w / 2, PAD + 8 * K, W - PAD - 8 * K);
+      const candidates = rerouting ? [leftEdge, rightEdge] : [leftEdge, center, rightEdge];
+
+      const next2Row = p.groundedRow < TOP_ROW - 1 ? state.rows[p.groundedRow + 2] : null;
+      const n2Center = (next2Row && !next2Row.full && next2Row.platform)
+        ? next2Row.platform.x + next2Row.platform.w / 2 : null;
+      const rowEnemies = state.enemies.filter(e => e.alive && e.type === 'topi' && e.row === p.groundedRow + 1);
+
+      let best = candidates[0], bestScore = -Infinity;
+      for (const c of candidates) {
+        let score = 0;
+        score -= Math.abs(wrapDelta(c, p.x, W)) * 0.02; // mild preference for the shorter hop
+        if (n2Center !== null) score -= Math.abs(c - n2Center) * 0.05; // sets up the jump after this one too
+        for (const e of rowEnemies) if (Math.abs(wrapDelta(c, e.x, W)) < 22 * K) score -= 40; // don't land on a patrol
+        if (score > bestScore) { bestScore = score; best = c; }
+      }
+      trueTargetX = best;
     }
 
     // walking target stays on the CURRENT platform (don't march off the edge
@@ -757,7 +786,18 @@
     if (p.safeTimer <= dt) p.pauseExtra = Math.random() < perc.pauseChance ? rnd(0.15, 0.5) : 0;
     if (urgent || p.safeTimer > perc.jumpHesitation + p.pauseExtra) {
       p.safeTimer = 0;
-      p.airTargetX = trueTargetX;
+      // committing NOW — the walk phase tracked the platform's live position,
+      // but a moving platform won't still be there ~0.56s later when the
+      // jump actually lands, so re-project the same chosen spot (center/edge/
+      // planned offset) forward to where the platform will BE at landing
+      let launchTargetX = trueTargetX;
+      if (nextRow && !nextRow.full && nextRow.platform.drift) {
+        const np = nextRow.platform;
+        const offset = trueTargetX - np.x;
+        const futureX = predictBounceX(np.x, np.drift.dir, np.drift.speed, JUMP_AIRTIME, np.drift.min, np.drift.max);
+        launchTargetX = futureX + offset;
+      }
+      p.airTargetX = launchTargetX;
       return { left: false, right: false, jump: true, attack: false };
     }
     return { left: false, right: false, jump: false, attack: false };
@@ -1218,10 +1258,12 @@
       stepPlayer(state, p, dt);
     }
 
+    // same world-space/camera-anchoring fix as the durians below — a fixed
+    // screen y would silently fall out of view once the camera scrolls
     state.vegTimer -= dt;
     if (state.vegTimer <= 0) {
       state.vegTimer = rnd(3.5, 6);
-      state.veggies.push({ x: rnd(20, W - 20), y: 20, vy: 42 });
+      state.veggies.push({ x: rnd(20 * K, W - 20 * K), y: state.cameraY - 20 * K, vy: 42 * K });
     }
     for (let i = state.veggies.length - 1; i >= 0; i--) {
       const v = state.veggies[i];
@@ -1236,7 +1278,7 @@
         }
       }
       if (caught) { state.veggies.splice(i, 1); continue; }
-      if (v.y > H + 10) state.veggies.splice(i, 1);
+      if (v.y > state.cameraY + H + 20 * K) state.veggies.splice(i, 1);
     }
 
     state.adamCommentTimer -= dt;
@@ -1263,21 +1305,19 @@
     const spawnY = state.cameraY - 30 * K;
     state.durianTimer -= dt;
     if (state.durianTimer <= 0) {
-      if (durianStormActive) {
-        // a real wall of fruit — full-width wave forcing left/right dodging,
-        // not one durian to sidestep
-        state.durianTimer = rnd(0.7, 1.1);
-        const waveCount = 4 + Math.floor(Math.random() * 3); // 4-6 at once
-        const lane = (W - 40 * K) / waveCount;
-        for (let w = 0; w < waveCount; w++) {
-          state.durians.push({
-            x: 20 * K + lane * (w + 0.5) + rnd(-lane * 0.3, lane * 0.3),
-            y: spawnY - rnd(0, 60 * K), vy: 95 * K, spin: rnd(0, 6),
-          });
-        }
-      } else {
-        state.durianTimer = rnd(6, 10);
-        state.durians.push({ x: rnd(20 * K, W - 20 * K), y: spawnY, vy: 60 * K, spin: 0 });
+      // multiple durians at once, falling from staggered heights across the
+      // width, ALWAYS — not one lone durian with a storm as the only time
+      // more than one exists. A storm is a bigger, faster, denser version of
+      // the same wave, not a separate mode.
+      const waveCount = durianStormActive ? 4 + Math.floor(Math.random() * 3) : 3 + Math.floor(Math.random() * 3);
+      state.durianTimer = durianStormActive ? rnd(0.7, 1.1) : rnd(1.0, 1.6);
+      const vy = (durianStormActive ? 95 : 65) * K;
+      const lane = (W - 40 * K) / waveCount;
+      for (let w = 0; w < waveCount; w++) {
+        state.durians.push({
+          x: 20 * K + lane * (w + 0.5) + rnd(-lane * 0.3, lane * 0.3),
+          y: spawnY - rnd(0, 70 * K), vy, spin: rnd(0, 6),
+        });
       }
     }
     for (let i = state.durians.length - 1; i >= 0; i--) {
@@ -1496,22 +1536,26 @@
 
     for (const d of state.durians) {
       const dx = Math.round(d.x), dy = Math.round(d.y);
-      const r = 9 * K; // bigger, and unmistakably round
+      const rx = 9 * K, ry = 8 * K; // slightly oval husk, not a perfect ball
       const wobble = Math.sin(d.spin) > 0 ? 1 : -1; // discrete tumble, no smooth rotation
-      ctx.fillStyle = C.durianSpike;
-      for (let s = 0; s < 8; s++) {
-        const ang = (s / 8) * Math.PI * 2 + d.spin * 0.3;
-        const sx = dx + Math.cos(ang) * r;
-        const sy = dy + Math.sin(ang) * r;
-        ctx.fillRect(Math.round(sx - 1.5 * K), Math.round(sy - 1.5 * K), 3 * K, 3 * K);
-      }
       ctx.fillStyle = C.durian;
       ctx.beginPath();
-      ctx.arc(dx + wobble, dy, r, 0, Math.PI * 2);
+      ctx.ellipse(dx + wobble, dy, rx, ry, 0, 0, Math.PI * 2);
       ctx.fill();
+      // a real durian husk is covered in many small thorns, not eight big
+      // mace-like points — dense small spikes read as spiky fruit, not a mine
       ctx.fillStyle = C.durianSpike;
+      const spikeCount = 14;
+      for (let s = 0; s < spikeCount; s++) {
+        const ang = (s / spikeCount) * Math.PI * 2 + d.spin * 0.4;
+        const sx = dx + Math.cos(ang) * rx * 0.95;
+        const sy = dy + Math.sin(ang) * ry * 0.95;
+        ctx.fillRect(Math.round(sx - K), Math.round(sy - K), 2 * K, 2 * K);
+      }
+      // one soft highlight patch for roundness — flat cel shading, not a gradient
+      ctx.fillStyle = C.durianHi;
       ctx.beginPath();
-      ctx.arc(dx - r * 0.3, dy - r * 0.3, r * 0.35, 0, Math.PI * 2);
+      ctx.ellipse(dx - rx * 0.3, dy - ry * 0.3, rx * 0.32, ry * 0.28, 0, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -1805,9 +1849,10 @@
   });
 
   const musicBtn = document.getElementById('music-btn');
+  musicBtn.classList.toggle('muted', true);
   musicBtn.addEventListener('click', () => {
     const on = BGM.toggle();
-    musicBtn.textContent = '♪ ' + (on ? 'ON' : 'OFF');
+    musicBtn.classList.toggle('muted', !on);
   });
 
   g = newGame();
