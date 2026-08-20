@@ -73,10 +73,10 @@
   const THREAT_RADIUS = 78 * K;
   const PAD = 20 * K; // edge margin for enemies/holes — players wrap instead of clamping
   const STUN_TIME = 0.5;
-  const INVULN_TIME = 0.9;
+  const INVULN_TIME = 1.3; // dense continuous durian waves mean back-to-back hits chain fast without more grace here
   const BONUS_TIME = 6.5;
   const SUMMIT_BANNER_TIME = 1.4;
-  const MAX_ROUND_TIME = 90;
+  const MAX_ROUND_TIME = 130; // raised to absorb the extra hazard density from icicles + multi-ledge rows
   const PRESSURE_DELAY = 35;
   const PRESSURE_SPEED = 16 * K;
   const IDLE_TIMEOUT_MS = 11000;
@@ -284,24 +284,36 @@
   // used anywhere two x-positions are compared, so nothing breaks at the seam.
   const wrapDelta = (a, b, m) => { let d = wrap(a - b, m); if (d > m / 2) d -= m; return d; };
 
-  // is x currently unsupported on this row? — every mid-row is a single short
-  // platform (like the real game's staggered ice ledges), so anywhere off it
-  // is open air. Start and summit rows are always fully solid.
+  // is x currently unsupported on this row? — every mid-row is 1-3 short
+  // separate ledges (left/center/right, like the real game's staggered ice
+  // floors), so anywhere off all of them is open air. Start and summit rows
+  // are always fully solid.
   function rowHazardAt(row, x) {
     if (row.full) return false;
-    const p = row.platform;
-    if (!p || p.broken) return true;
-    return !(x > p.x && x < p.x + p.w);
+    if (!row.platforms) return true;
+    for (const p of row.platforms) if (!p.broken && x > p.x && x < p.x + p.w) return false;
+    return true;
+  }
+
+  // which specific ledge (if any) currently covers x — needed everywhere a
+  // row might now have more than one, to know WHICH one an entity is on
+  function platformAt(row, x) {
+    if (row.full || !row.platforms) return null;
+    for (const p of row.platforms) if (!p.broken && x > p.x && x < p.x + p.w) return p;
+    return null;
   }
 
   // ---- world generation ------------------------------------------------------
-  // Two alternating lanes (left/right), one short platform per row — the real
-  // game's zigzag, not a full-width floor with a narrow gap. Each platform is
-  // placed relative to the ONE BELOW it (not picked independently inside a
-  // huge half-screen zone), so the gap is always within actual jump range —
-  // otherwise random placement could (and did) produce climbs no jump arc
-  // could ever cross. REACH is a conservative measure of that arc: full-hold
-  // Mario-jump airtime (~0.59s covering one ROW_H) times AIR_MOVE_SPEED.
+  // Each mid-row is 1-3 short separate ledges (left/center/right, like the
+  // real game's staggered ice floors), not a single lane. The PRIMARY ledge
+  // on each row is placed relative to the one below it (not picked
+  // independently inside a huge half-screen zone), so the main climbing path
+  // is always within actual jump range — otherwise random placement could
+  // (and did) produce climbs no jump arc could ever cross. Extra ledges are
+  // placed relative to the primary one on the SAME row, giving real left/
+  // center/right route choice without risking that guarantee. REACH is a
+  // conservative measure of jump range: full-hold Mario-jump airtime
+  // (~0.59s covering one ROW_H) times AIR_MOVE_SPEED.
   const REACH = 95 * K;
   function buildMountain(difficulty) {
     difficulty = difficulty || 0;
@@ -313,13 +325,32 @@
     const crackChance = clamp(0.3 + difficulty * 0.025, 0.3, 0.6);
     const crackTime = () => rnd(clamp(2.4 - difficulty * 0.08, 1.1, 2.4), clamp(3.2 - difficulty * 0.08, 1.6, 3.2));
 
+    function makePlatform(x, w, driftMul, crackMul) {
+      const plat = { x, w, homeX: x, broken: false };
+      if (Math.random() < driftChance * driftMul) {
+        const range = clamp(REACH * 0.45, 24 * K, 60 * K);
+        plat.drift = {
+          speed: rnd(18, 34) * K * (1 + difficulty * 0.04), dir: Math.random() < 0.5 ? -1 : 1,
+          min: clamp(x - range, PAD, W - PAD - w), max: clamp(x + range, PAD, W - PAD - w),
+        };
+      }
+      if (Math.random() < crackChance * crackMul) plat.crack = { timer: 0, maxTime: crackTime() };
+      // stalactites hanging off the underside — jarred loose and fall the
+      // moment someone lands on the ice above them. Stored as an OFFSET from
+      // the platform's own x, not an absolute position, so they ride along
+      // with a drifting platform instead of hanging in empty air behind it.
+      plat.icicles = [];
+      for (let off = 6 * K; off < w - 4 * K; off += 26 * K) plat.icicles.push({ off, fallen: false });
+      return plat;
+    }
+
     const rows = [];
     let prevX = null; // near-edge chaining anchor from the row below
     let lastGoingRight = Math.random() < 0.5;
     let lastWasRest = false;
     for (let i = 0; i <= TOP_ROW; i++) {
       const y = START_Y - i * ROW_H;
-      if (i === 0 || i === TOP_ROW) { rows.push({ y, full: true, platform: null }); prevX = null; continue; }
+      if (i === 0 || i === TOP_ROW) { rows.push({ y, full: true, platforms: null }); prevX = null; continue; }
 
       // vary the rhythm row to row — a straight strict left-right-left-right
       // alternation with one fixed platform size reads as one repeating
@@ -330,7 +361,7 @@
       const roll = Math.random();
       const canRest = i > 1 && i < TOP_ROW - 1 && !lastWasRest;
       if (canRest && roll < 0.14) {
-        rows.push({ y, full: true, platform: null });
+        rows.push({ y, full: true, platforms: null });
         prevX = null; lastWasRest = true;
         continue;
       }
@@ -353,27 +384,31 @@
         x = goingRight ? prevX + gap : prevX - gap - w;
         x = clamp(x, PAD, W - PAD - w);
       }
-      const platform = { x, w, homeX: x, broken: false };
-      if (Math.random() < driftChance) {
-        const range = clamp(REACH * 0.45, 24 * K, 60 * K);
-        platform.drift = {
-          speed: rnd(18, 34) * K * (1 + difficulty * 0.04), dir: Math.random() < 0.5 ? -1 : 1,
-          min: clamp(x - range, PAD, W - PAD - w), max: clamp(x + range, PAD, W - PAD - w),
-        };
+      const primary = makePlatform(x, w, 1, 1);
+      const platforms = [primary];
+
+      // extra ledges on the SAME row for real left/center/right choice —
+      // placed within reach of the primary one (not the row below), so they
+      // add route variety without ever risking an unreachable main climb
+      const extraRoll = Math.random();
+      const extraCount = extraRoll < 0.35 ? 0 : extraRoll < 0.75 ? 1 : 2;
+      for (let e = 0; e < extraCount; e++) {
+        const ew = rnd(46, 96) * K * widthScale;
+        const side = Math.random() < 0.5 ? -1 : 1;
+        const gap2 = rnd(14 * K, REACH * 0.75);
+        let ex = side < 0 ? x - gap2 - ew : x + w + gap2;
+        ex = clamp(ex, PAD, W - PAD - ew);
+        const overlaps = platforms.some(pl => ex < pl.x + pl.w + 10 * K && ex + ew > pl.x - 10 * K);
+        if (overlaps) continue;
+        platforms.push(makePlatform(ex, ew, 0.6, 0.6));
       }
-      if (Math.random() < crackChance) {
-        platform.crack = { timer: 0, maxTime: crackTime() };
-      }
-      // stalactites hanging off the underside — jarred loose and fall the
-      // moment someone lands on the ice above them. Stored as an OFFSET from
-      // the platform's own x, not an absolute position, so they ride along
-      // with a drifting platform instead of hanging in empty air behind it.
-      platform.icicles = [];
-      for (let off = 6 * K; off < w - 4 * K; off += 18 * K) platform.icicles.push({ off, fallen: false });
-      rows.push({ y, full: false, platform });
+      platforms.sort((a, b) => a.x - b.x);
+
+      rows.push({ y, full: false, platforms });
       // hand off the edge the NEXT row will jump FROM — since direction
-      // strictly alternates, that's this platform's far edge relative to how
-      // we arrived (arrived going right -> next leaves going left -> left edge)
+      // strictly alternates, that's the PRIMARY platform's far edge relative
+      // to how we arrived (arrived going right -> next leaves going left ->
+      // left edge); extra ledges don't participate in the chain guarantee
       prevX = goingRight ? x : x + w;
     }
 
@@ -385,10 +420,12 @@
     const topiRows = [...midRows].sort(() => Math.random() - 0.5).slice(0, topiCount);
     const speedScale = 1 + Math.min(0.55, difficulty * 0.04);
     for (const r of topiRows) {
-      const plat = rows[r].platform;
+      const plats = rows[r].platforms;
+      const platIdx = plats && plats.length ? Math.floor(Math.random() * plats.length) : -1;
+      const plat = platIdx >= 0 ? plats[platIdx] : null;
       const spawnX = plat ? rnd(plat.x + 4 * K, plat.x + plat.w - 4 * K) : rnd(PAD + 10, W - PAD - 10);
       enemies.push({
-        type: 'topi', row: r, x: spawnX,
+        type: 'topi', row: r, platIdx, x: spawnX,
         dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(34, 50) * speedScale * K,
         alive: true, respawnTimer: 0,
         anim: { f: 0, t: CELS.topi[0] },
@@ -632,7 +669,7 @@
       if (e.type === 'topi') {
         if (e.row !== p.groundedRow) continue;
         const row = state.rows[e.row];
-        const plat = row.platform;
+        const plat = e.platIdx >= 0 && row.platforms ? row.platforms[e.platIdx] : null;
         const lo = plat ? plat.x + 4 * K : PAD + 8, hi = plat ? plat.x + plat.w - 4 * K : W - PAD - 8;
         ex = predictT > 0 ? predictBounceX(e.x, e.dir, e.speed, predictT, lo, hi) : e.x;
         ey = row.y - 8 * K;
@@ -767,15 +804,24 @@
     // setting up the FOLLOWING jump (two rows ahead) wins more, and a patrol
     // currently standing on the landing row is a hard penalty.
     let trueTargetX = p.x;
-    if (nextRow && !nextRow.full) {
-      const np = nextRow.platform;
-      const leftEdge = np.x + 8 * K, rightEdge = np.x + np.w - 8 * K;
-      const center = clamp(np.x + np.w / 2, PAD + 8 * K, W - PAD - 8 * K);
-      const candidates = rerouting ? [leftEdge, rightEdge] : [leftEdge, center, rightEdge];
+    if (nextRow && !nextRow.full && nextRow.platforms) {
+      // every ledge on the landing row gets left/center/right candidates —
+      // comparing across ALL of them (not just one lane) is what makes
+      // left/center/right routing an actual choice instead of a formality
+      const candidates = [];
+      for (const np of nextRow.platforms) {
+        const leftEdge = np.x + 8 * K, rightEdge = np.x + np.w - 8 * K;
+        const center = clamp(np.x + np.w / 2, PAD + 8 * K, W - PAD - 8 * K);
+        if (rerouting) candidates.push(leftEdge, rightEdge);
+        else candidates.push(leftEdge, center, rightEdge);
+      }
 
       const next2Row = p.groundedRow < TOP_ROW - 1 ? state.rows[p.groundedRow + 2] : null;
-      const n2Center = (next2Row && !next2Row.full && next2Row.platform)
-        ? next2Row.platform.x + next2Row.platform.w / 2 : null;
+      let n2Center = null;
+      if (next2Row && !next2Row.full && next2Row.platforms && next2Row.platforms.length) {
+        const mid = next2Row.platforms[Math.floor(next2Row.platforms.length / 2)];
+        n2Center = mid.x + mid.w / 2;
+      }
       const rowEnemies = state.enemies.filter(e => e.alive && e.type === 'topi' && e.row === p.groundedRow + 1);
 
       let best = candidates[0], bestScore = -Infinity;
@@ -789,11 +835,12 @@
       trueTargetX = best;
     }
 
-    // walking target stays on the CURRENT platform (don't march off the edge
+    // walking target stays on the CURRENT ledge (don't march off the edge
     // lining up) — the rest of the gap gets closed by air-steering mid-jump
+    const standingOn = platformAt(row, p.x);
     let walkTargetX = trueTargetX;
-    if (!row.full && row.platform) {
-      walkTargetX = clamp(trueTargetX, row.platform.x + 4 * K, row.platform.x + row.platform.w - 4 * K);
+    if (!row.full && standingOn) {
+      walkTargetX = clamp(trueTargetX, standingOn.x + 4 * K, standingOn.x + standingOn.w - 4 * K);
     }
 
     const tdx = wrapDelta(p.x, walkTargetX, W);
@@ -802,8 +849,8 @@
       return { left: dir < 0, right: dir > 0, jump: false, attack: false };
     }
 
-    // the platform underfoot is about to give way — go now, alignment be damned
-    const plat = row.platform;
+    // the ledge underfoot is about to give way — go now, alignment be damned
+    const plat = standingOn;
     const urgent = plat && plat.crack && !plat.broken && plat.crack.timer > plat.crack.maxTime * 0.7;
 
     for (const other of state.players) {
@@ -827,8 +874,9 @@
       // jump actually lands, so re-project the same chosen spot (center/edge/
       // planned offset) forward to where the platform will BE at landing
       let launchTargetX = trueTargetX;
-      if (nextRow && !nextRow.full && nextRow.platform.drift) {
-        const np = nextRow.platform;
+      const landingPlat = nextRow && !nextRow.full ? platformAt(nextRow, trueTargetX) : null;
+      if (landingPlat && landingPlat.drift) {
+        const np = landingPlat;
         const offset = trueTargetX - np.x;
         const futureX = predictBounceX(np.x, np.drift.dir, np.drift.speed, JUMP_AIRTIME, np.drift.min, np.drift.max);
         launchTargetX = futureX + offset;
@@ -940,8 +988,8 @@
   // automatically via the same rowHazardAt check a natural crack-break uses)
   function smashPlatform(state, attacker) {
     const row = state.rows[attacker.groundedRow];
-    if (row.full || !row.platform || row.platform.broken) { SFX.hit(); return; }
-    const plat = row.platform;
+    const plat = row.full ? null : platformAt(row, attacker.x);
+    if (!plat) { SFX.hit(); return; }
     plat.broken = true;
     plat.respawnTimer = rnd(2.2, 3.4);
     if (plat.crack) plat.crack.timer = 0;
@@ -955,7 +1003,9 @@
   function respawnEnemy(state, e) {
     if (e.type === 'topi') {
       e.row = 1 + Math.floor(Math.random() * (TOP_ROW - 1));
-      const plat = state.rows[e.row].platform;
+      const plats = state.rows[e.row].platforms;
+      e.platIdx = plats && plats.length ? Math.floor(Math.random() * plats.length) : -1;
+      const plat = e.platIdx >= 0 ? plats[e.platIdx] : null;
       e.x = plat ? rnd(plat.x + 4 * K, plat.x + plat.w - 4 * K) : rnd(PAD + 10, W - PAD - 10);
       e.dir = Math.random() < 0.5 ? -1 : 1;
     } else {
@@ -970,7 +1020,7 @@
   // the icicle nearest where a climber actually landed shakes loose and falls
   // — real, and only the one you disturbed, not the whole row at once
   function shakeIcicles(state, row, x) {
-    const plat = row.platform;
+    const plat = platformAt(row, x);
     if (!plat || !plat.icicles) return;
     let nearest = null, bestD = Infinity;
     for (const ic of plat.icicles) {
@@ -985,37 +1035,37 @@
 
   function updatePlatforms(state, dt) {
     state.rows.forEach((row, i) => {
-      if (row.full || !row.platform) return;
-      const p = row.platform;
-
-      if (p.broken) {
-        p.respawnTimer -= dt;
-        if (p.respawnTimer <= 0) {
-          // respawn near its ORIGINAL spot, not a fresh random half of the
-          // screen — neighboring rows were placed reachable from homeX, and a
-          // wholly new random spot could reintroduce an uncrossable gap
-          p.x = clamp(p.homeX + rnd(-12, 12) * K, PAD, W - PAD - p.w);
-          for (const ic of p.icicles) ic.fallen = false; // regrown with the fresh ice
-          p.broken = false;
-          if (p.crack) p.crack.timer = 0;
+      if (row.full || !row.platforms) return;
+      for (const p of row.platforms) {
+        if (p.broken) {
+          p.respawnTimer -= dt;
+          if (p.respawnTimer <= 0) {
+            // respawn near its ORIGINAL spot, not a fresh random position —
+            // neighboring ledges were placed reachable from homeX, and a
+            // wholly new spot could reintroduce an uncrossable gap
+            p.x = clamp(p.homeX + rnd(-12, 12) * K, PAD, W - PAD - p.w);
+            for (const ic of p.icicles) ic.fallen = false; // regrown with the fresh ice
+            p.broken = false;
+            if (p.crack) p.crack.timer = 0;
+          }
+          continue;
         }
-        return;
-      }
 
-      if (p.drift) {
-        p.x += p.drift.speed * p.drift.dir * dt;
-        if (p.x < p.drift.min) { p.x = p.drift.min; p.drift.dir = 1; }
-        if (p.x > p.drift.max) { p.x = p.drift.max; p.drift.dir = -1; }
-      }
+        if (p.drift) {
+          p.x += p.drift.speed * p.drift.dir * dt;
+          if (p.x < p.drift.min) { p.x = p.drift.min; p.drift.dir = 1; }
+          if (p.x > p.drift.max) { p.x = p.drift.max; p.drift.dir = -1; }
+        }
 
-      if (p.crack) {
-        const occupied = state.players.some(pl =>
-          !pl.carried && pl.grounded && pl.groundedRow === i && pl.x > p.x && pl.x < p.x + p.w);
-        if (occupied) {
-          p.crack.timer += dt;
-          if (p.crack.timer >= p.crack.maxTime) { p.broken = true; p.respawnTimer = rnd(2.5, 4); }
-        } else {
-          p.crack.timer = Math.max(0, p.crack.timer - dt * 0.6);
+        if (p.crack) {
+          const occupied = state.players.some(pl =>
+            !pl.carried && pl.grounded && pl.groundedRow === i && pl.x > p.x && pl.x < p.x + p.w);
+          if (occupied) {
+            p.crack.timer += dt;
+            if (p.crack.timer >= p.crack.maxTime) { p.broken = true; p.respawnTimer = rnd(2.5, 4); }
+          } else {
+            p.crack.timer = Math.max(0, p.crack.timer - dt * 0.6);
+          }
         }
       }
     });
@@ -1031,7 +1081,7 @@
       if (e.type === 'topi') {
         tickCel(e.anim, CELS.topi, dt);
         const row = state.rows[e.row];
-        const plat = row.platform;
+        const plat = e.platIdx >= 0 && row.platforms ? row.platforms[e.platIdx] : null;
         // patrols stay on its own short ledge — the row band is mostly open
         // air now, so a full-width patrol would walk the topi off into space
         const lo = plat ? plat.x + 4 * K : PAD + 8, hi = plat ? plat.x + plat.w - 4 * K : W - PAD - 8;
@@ -1103,7 +1153,10 @@
       if (p.grounded) {
         const row = state.rows[p.groundedRow];
         if (rowHazardAt(row, p.x)) p.grounded = false;
-        else if (!row.full && row.platform.drift) p.x = wrap(p.x + row.platform.drift.dir * row.platform.drift.speed * dt, W); // ride the platform
+        else {
+          const standing = platformAt(row, p.x);
+          if (standing && standing.drift) p.x = wrap(p.x + standing.drift.dir * standing.drift.speed * dt, W); // ride the platform
+        }
       }
       let landedRow = false;
       if (p.vy >= 0) {
@@ -1114,7 +1167,7 @@
             p.y = row.y - PLAYER_H; p.vy = 0; p.grounded = true; p.groundedRow = i;
             bottom = p.y + PLAYER_H;
             landedRow = true;
-            if (!row.full && row.platform) shakeIcicles(state, row, p.x);
+            if (!row.full) shakeIcicles(state, row, p.x);
             if (p.lastJumpRow >= 0) {
               // did that jump actually gain a floor, or land back where it started?
               p.stuckCount = i > p.lastJumpRow ? 0 : p.stuckCount + 1;
@@ -1304,9 +1357,11 @@
         const target = clamp(leaderRow - 1, 0, TOP_ROW);
         const row = state.rows[target];
         p.groundedRow = target;
-        p.x = row.full || !row.platform
-          ? clamp(p.x, PAD + 6 * K, W - PAD - 6 * K)
-          : clamp(p.x, row.platform.x + 6 * K, row.platform.x + row.platform.w - 6 * K);
+        const landPlat = row.full || !row.platforms || !row.platforms.length ? null
+          : row.platforms.reduce((a, b) => Math.abs(a.x + a.w / 2 - p.x) < Math.abs(b.x + b.w / 2 - p.x) ? a : b);
+        p.x = landPlat
+          ? clamp(p.x, landPlat.x + 6 * K, landPlat.x + landPlat.w - 6 * K)
+          : clamp(p.x, PAD + 6 * K, W - PAD - 6 * K);
         p.y = row.y - PLAYER_H; p.vx = 0; p.vy = 0; p.grounded = true;
         p.invuln = INVULN_TIME; p.stun = 0.2;
         p.stuckCount = 0; p.lastJumpRow = -1; p.avoidTimer = 0; p.safeTimer = 0;
@@ -1632,19 +1687,21 @@
       const row = rows[i], y = row.y;
       if (row.full) {
         drawTile(0, y, W, baseT, false);
-      } else if (row.platform && !row.platform.broken) {
-        const plat = row.platform;
-        if (plat.crack) drawCrackTile(plat, y, baseT);
-        else drawTile(plat.x, y, plat.w, baseT, true);
-        // stalactites hanging off the underside — jarred loose and fall when
-        // someone lands on the ice above; a short ledge in open air otherwise
-        // reads as bare and empty below it
-        ctx.fillStyle = C.ledgeEdge;
-        for (const ic of plat.icicles) {
-          if (ic.fallen) continue;
-          const icx = plat.x + ic.off;
-          const drop = (Math.sin(icx * 0.13 + i) * 0.5 + 0.5) * 7 * K + 4 * K;
-          ctx.fillRect(Math.round(icx), Math.round(y + baseT), Math.round(3 * K), Math.round(drop));
+      } else if (row.platforms) {
+        for (const plat of row.platforms) {
+          if (plat.broken) continue;
+          if (plat.crack) drawCrackTile(plat, y, baseT);
+          else drawTile(plat.x, y, plat.w, baseT, true);
+          // stalactites hanging off the underside — jarred loose and fall when
+          // someone lands on the ice above; a short ledge in open air otherwise
+          // reads as bare and empty below it
+          ctx.fillStyle = C.ledgeEdge;
+          for (const ic of plat.icicles) {
+            if (ic.fallen) continue;
+            const icx = plat.x + ic.off;
+            const drop = (Math.sin(icx * 0.13 + i) * 0.5 + 0.5) * 7 * K + 4 * K;
+            ctx.fillRect(Math.round(icx), Math.round(y + baseT), Math.round(3 * K), Math.round(drop));
+          }
         }
       }
       // per-row altitude marker along the cave wall, like the reference image
