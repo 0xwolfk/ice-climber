@@ -125,9 +125,14 @@ html, body {
 
 @keyframes blink { 50% { opacity: 0.2; } }
 
+.btnRow {
+  display: flex;
+  gap: 8px;
+}
+
 .speed-btn {
   font-family: 'Press Start 2P', 'Courier New', monospace;
-  font-size: 15px;
+  font-size: 13px;
   background: var(--panel);
   color: var(--accent);
   border: 2px solid var(--accent);

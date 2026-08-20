@@ -54,10 +54,14 @@
   const K = H / 420;
   const ROW_H = 56 * K;
   const PLATFORM_T = 8 * K;
-  const CEIL_T = 8 * K;
   const PLAYER_W = 21 * K, PLAYER_H = 27 * K; // 1.5x the original sprite, at this screen's scale
   const GRAVITY = 900 * K;
-  const JUMP_VY = -340 * K;
+  // Mario-style variable-height jump: light gravity while rising with the
+  // button held (a full hold reaches the same tuned apex as before — JUMP_VY
+  // is scaled down to compensate for the lighter ascent), heavy gravity the
+  // moment you release early or start falling, so it never feels floaty.
+  const ASCEND_MULT = 0.6, DESCEND_MULT = 1.75;
+  const JUMP_VY = -340 * K * Math.sqrt(ASCEND_MULT);
   const MOVE_SPEED = 140 * K;
   const AIR_MOVE_SPEED = 122 * K;
   const MELEE_RANGE = 20 * K;
@@ -67,8 +71,8 @@
   const INVULN_TIME = 0.9;
   const BONUS_TIME = 6.5;
   const SUMMIT_BANNER_TIME = 1.4;
-  const MAX_ROUND_TIME = 45;
-  const PRESSURE_DELAY = 20;
+  const MAX_ROUND_TIME = 90;
+  const PRESSURE_DELAY = 35;
   const PRESSURE_SPEED = 16 * K;
   const IDLE_TIMEOUT_MS = 11000;
   const INTERACT_RANGE = 30 * K;
@@ -80,7 +84,11 @@
   const HUD_CLEARANCE = (hudEl ? hudEl.offsetHeight : 50 * K) + 10 * K;
   const FOOTER_CLEARANCE = (footEl ? footEl.offsetHeight : 30 * K) + 10 * K;
   const BONUS_ZONE = 82 * K; // headroom above the summit row for the condor bonus stage
-  const TOP_ROW = Math.max(3, Math.floor((H - HUD_CLEARANCE - FOOTER_CLEARANCE - BONUS_ZONE) / ROW_H));
+  // the mountain is much taller than one screen — a real climb, not a single
+  // static view — the camera (state.cameraY) follows the lead climber upward
+  // to reveal it rather than the canvas growing or scrolling the page.
+  const TOP_ROW = 13;
+  const CAMERA_ANCHOR = 0.6; // the lead climber sits ~60% down the visible window
   const START_Y = H - FOOTER_CLEARANCE;
 
   const SPEED_STEPS = [1, 2, 4, 8, 16];
@@ -92,15 +100,20 @@
 
   const C = {
     sky1: '#0b1024', sky2: '#232b5c', sky3: '#171c40',
+    skyWarn1: '#241206', skyWarn3: '#4a2410', skyWarn2: '#6b3418',
+    skyDanger1: '#2a0605', skyDanger3: '#5c120e', skyDanger2: '#7f1c14',
     starFar: '#4a5590', starNear: '#c8d2f5',
     ledge: '#dfe9ff', ledgeShade: '#a9b8e6', ledgeEdge: '#6f82c2', holeEdge: '#0b1024',
+    ledgeBase: '#5c6fb0', islandCrust: '#bfe8ff', islandBase: '#3f6fa8',
     ceil: '#7fd7ff', ceilCrack: '#2c6f8f', ceilShade: '#4fa8d6',
     topi: '#7bffc4', topiDark: '#1f7a56', enemyEye: '#0b1024',
     nit: '#ffb37b', nitDark: '#a5581f',
     veg: '#ffd166', vegLeaf: '#7bffc4',
+    durian: '#c9b23a', durianSpike: '#8a7a1f',
     condor: '#eef3ff', condorAccent: '#ffd166',
     bear: '#f4f7ff', bearShade: '#c3cdea',
     basket: '#b98a4b', basketDark: '#7a5a2f',
+    wallBody: '#2f3d72', wallShade: '#1c2650', wallHi: '#7f92d6', numGold: '#ffd166',
     dim: '#8fa0c9', ink: '#eef3ff'
   };
 
@@ -108,14 +121,14 @@
     // predictSeconds: how far ahead each personality projects enemy movement
     // before deciding to dodge — short = reactive/instinctive, long = anticipates
     // the patrol swing like a chess player reading an opponent's next move.
-    NAYKILLA: { attackChance: 0.82, dangerDist: 24 * K, holeMargin: 8 * K,  jumpHesitation: 0.05, predictSeconds: 0.18, impatience: 0.05 },
-    USHER:    { attackChance: 0.18, dangerDist: 40 * K, holeMargin: 20 * K, jumpHesitation: 0.35, predictSeconds: 0.85, impatience: 0.01 },
+    NAYKILLA: { attackChance: 0.82, dangerDist: 24 * K, holeMargin: 8 * K,  jumpHesitation: 0.14, predictSeconds: 0.18, impatience: 0.05, pauseChance: 0.15 },
+    USHER:    { attackChance: 0.18, dangerDist: 40 * K, holeMargin: 20 * K, jumpHesitation: 0.4,  predictSeconds: 0.85, impatience: 0.01, pauseChance: 0.4 },
   };
 
   const COLORS = {
-    NAYKILLA: { body: '#ff6bcb', dark: '#a83f8a', accent: '#ffe66d', skin: '#ffd8b0', accessory: 'spike' },
-    USHER:    { body: '#4d8dff', dark: '#1f4fb8', accent: '#eef3ff', skin: '#ffd8b0', accessory: 'visor' },
-    ADAM:     { body: '#c8ff6b', dark: '#7fae2f', accent: '#ffe66d', skin: '#ffd8b0', accessory: 'cap' },
+    NAYKILLA: { body: '#ff6bcb', dark: '#a83f8a', accent: '#ffe66d', skin: '#ffd8b0', accessory: 'spike', held: 'lollipop' },
+    USHER:    { body: '#4d8dff', dark: '#1f4fb8', accent: '#eef3ff', skin: '#ffd8b0', accessory: 'visor', held: 'chicken' },
+    ADAM:     { body: '#c8ff6b', dark: '#7fae2f', accent: '#ffe66d', skin: '#ffd8b0', accessory: 'cap', held: null },
   };
 
   // ---- cel animation ---------------------------------------------------------
@@ -163,6 +176,7 @@
     }
     return {
       unlock: ensure,
+      ctx: ensure,
       jump: () => beep(520, 0.05, 'square', 0.035),
       breakBlock: (hpLeft) => beep(hpLeft > 0 ? 260 : 200, 0.09, 'square', 0.05, hpLeft > 0 ? 200 : 120),
       hit: () => beep(150, 0.13, 'sawtooth', 0.05, 380),
@@ -174,6 +188,46 @@
         setTimeout(() => beep(659, 0.08, 'square', 0.045), 90);
         setTimeout(() => beep(first ? 988 : 784, 0.14, 'square', 0.05), 180);
       },
+    };
+  })();
+
+  // ---- background music ------------------------------------------------------
+  // A short original chiptune loop (lead + soft bass), off by default until the
+  // player opts in. Not transcribed from any existing song — an original riff
+  // in the same energetic 8-bit spirit.
+  const BGM = (() => {
+    let playing = false, timer = null, idx = 0;
+    const lead = [523, 659, 784, 659, 587, 784, 698, 587, 523, 659, 880, 784, 659, 587, 494, 523];
+    const bass = [131, 0, 165, 0, 147, 0, 165, 0, 131, 0, 220, 0, 165, 0, 123, 0];
+    const noteDur = 0.18;
+    function tick() {
+      if (!playing) return;
+      const c = SFX.ctx();
+      const f = lead[idx % lead.length];
+      const osc = c.createOscillator(), gain = c.createGain();
+      osc.type = 'square'; osc.frequency.setValueAtTime(f, c.currentTime);
+      gain.gain.setValueAtTime(0.022, c.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + noteDur * 0.85);
+      osc.connect(gain); gain.connect(c.destination);
+      osc.start(); osc.stop(c.currentTime + noteDur);
+
+      const bf = bass[idx % bass.length];
+      if (bf) {
+        const bosc = c.createOscillator(), bgain = c.createGain();
+        bosc.type = 'triangle'; bosc.frequency.setValueAtTime(bf, c.currentTime);
+        bgain.gain.setValueAtTime(0.03, c.currentTime);
+        bgain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + noteDur * 1.7);
+        bosc.connect(bgain); bgain.connect(c.destination);
+        bosc.start(); bosc.stop(c.currentTime + noteDur * 1.8);
+      }
+      idx++;
+      timer = setTimeout(tick, noteDur * 1000);
+    }
+    return {
+      isOn: () => playing,
+      start() { if (playing) return; SFX.unlock(); playing = true; idx = 0; tick(); },
+      stop() { playing = false; if (timer) clearTimeout(timer); },
+      toggle() { if (playing) this.stop(); else this.start(); return playing; },
     };
   })();
 
@@ -225,43 +279,84 @@
   // used anywhere two x-positions are compared, so nothing breaks at the seam.
   const wrapDelta = (a, b, m) => { let d = wrap(a - b, m); if (d > m / 2) d -= m; return d; };
 
+  // is x currently unsupported on this row? — every mid-row is a single short
+  // platform (like the real game's staggered ice ledges), so anywhere off it
+  // is open air. Start and summit rows are always fully solid.
+  function rowHazardAt(row, x) {
+    if (row.full) return false;
+    const p = row.platform;
+    if (!p || p.broken) return true;
+    return !(x > p.x && x < p.x + p.w);
+  }
+
   // ---- world generation ------------------------------------------------------
-  // difficulty ramps with every mountain cleared: wider/more/drifting holes,
-  // tougher ice, more and faster enemies — "moving floorboards" appear from
-  // difficulty 3 onward (a hole that slides back and forth instead of sitting still).
+  // Two alternating lanes (left/right), one short platform per row — the real
+  // game's zigzag, not a full-width floor with a narrow gap. Each platform is
+  // placed relative to the ONE BELOW it (not picked independently inside a
+  // huge half-screen zone), so the gap is always within actual jump range —
+  // otherwise random placement could (and did) produce climbs no jump arc
+  // could ever cross. REACH is a conservative measure of that arc: full-hold
+  // Mario-jump airtime (~0.59s covering one ROW_H) times AIR_MOVE_SPEED.
+  const REACH = 95 * K;
   function buildMountain(difficulty) {
     difficulty = difficulty || 0;
-    const midRows = []; // climbable rows strictly between the start ledge and the summit
-    for (let i = 1; i < TOP_ROW; i++) midRows.push(i);
-
-    const holeChance = clamp(0.5 + difficulty * 0.025, 0.5, 0.85);
-    const ceilingHp = 2 + (difficulty >= 4 ? 1 : 0) + (difficulty >= 9 ? 1 : 0);
-    const driftChance = difficulty >= 3 ? clamp((difficulty - 2) * 0.08, 0, 0.5) : 0;
+    const startParity = Math.random() < 0.5 ? 0 : 1;
+    const platW = clamp(112 - difficulty * 2.5, 68, 112) * K; // short, block-count-sized ledge
+    // moving floorboards are a real, common fixture from the very first climb —
+    // not a rare high-difficulty variant — ramping only their speed with difficulty
+    const driftChance = clamp(0.3 + difficulty * 0.03, 0.3, 0.55);
+    // cracking ice is common from round one too; higher difficulty just breaks faster
+    const crackChance = clamp(0.3 + difficulty * 0.025, 0.3, 0.6);
+    const crackTime = () => rnd(clamp(2.4 - difficulty * 0.08, 1.1, 2.4), clamp(3.2 - difficulty * 0.08, 1.6, 3.2));
 
     const rows = [];
+    let prevX = null; // near-edge chaining anchor from the row below
     for (let i = 0; i <= TOP_ROW; i++) {
       const y = START_Y - i * ROW_H;
-      let hole = null;
-      if (midRows.includes(i) && Math.random() < holeChance) {
-        const w = clamp(rnd(40, 70) + difficulty * 1.5, 40, 100) * K;
-        hole = { x: rnd(PAD, W - PAD - w), w };
-        if (Math.random() < driftChance) {
-          hole.drift = { speed: rnd(18, 34) * K, dir: Math.random() < 0.5 ? -1 : 1 };
-        }
+      if (i === 0 || i === TOP_ROW) { rows.push({ y, full: true, platform: null }); prevX = null; continue; }
+
+      const goingRight = (i + startParity) % 2 === 1;
+      const w = platW;
+      let x;
+      if (prevX === null) {
+        x = rnd(PAD, W - PAD - w);
+      } else {
+        const gap = rnd(8 * K, REACH * 0.8); // always within reach, but still real horizontal distance
+        x = goingRight ? prevX + gap : prevX - gap - w;
+        x = clamp(x, PAD, W - PAD - w);
       }
-      const ceilingAbove = i < TOP_ROW ? { hp: ceilingHp, maxHp: ceilingHp, alive: true } : null;
-      rows.push({ y, hole, ceilingAbove });
+      const platform = { x, w, homeX: x, broken: false };
+      if (Math.random() < driftChance) {
+        const range = clamp(REACH * 0.45, 24 * K, 60 * K);
+        platform.drift = {
+          speed: rnd(18, 34) * K * (1 + difficulty * 0.04), dir: Math.random() < 0.5 ? -1 : 1,
+          min: clamp(x - range, PAD, W - PAD - w), max: clamp(x + range, PAD, W - PAD - w),
+        };
+      }
+      if (Math.random() < crackChance) {
+        platform.crack = { timer: 0, maxTime: crackTime() };
+      }
+      rows.push({ y, full: false, platform });
+      // hand off the edge the NEXT row will jump FROM — since direction
+      // strictly alternates, that's this platform's far edge relative to how
+      // we arrived (arrived going right -> next leaves going left -> left edge)
+      prevX = goingRight ? x : x + w;
     }
+
+    const midRows = [];
+    for (let i = 1; i < TOP_ROW; i++) midRows.push(i);
 
     const enemies = [];
     const topiCount = clamp(2 + Math.floor(difficulty / 3), 2, midRows.length);
     const topiRows = [...midRows].sort(() => Math.random() - 0.5).slice(0, topiCount);
     const speedScale = 1 + Math.min(0.55, difficulty * 0.04);
     for (const r of topiRows) {
+      const plat = rows[r].platform;
+      const spawnX = plat ? rnd(plat.x + 4 * K, plat.x + plat.w - 4 * K) : rnd(PAD + 10, W - PAD - 10);
       enemies.push({
-        type: 'topi', row: r, x: rnd(PAD + 10, W - PAD - 10),
+        type: 'topi', row: r, x: spawnX,
         dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(34, 50) * speedScale * K,
-        fillTimer: rnd(5, 9), alive: true, respawnTimer: 0,
+        alive: true, respawnTimer: 0,
         anim: { f: 0, t: CELS.topi[0] },
       });
     }
@@ -278,11 +373,14 @@
       });
     }
 
+    // bonus platforms step up toward the condor at center — bigger and closer
+    // to W/2 with each step, so the final stretch to the trophy is generous
+    // rather than a knife-edge landing
     const topY = rows[TOP_ROW].y;
-    const platW1 = 34 * K, platW2 = 30 * K;
+    const platW1 = 64 * K, platW2 = 52 * K;
     const bonusPlatforms = [
-      { x: rnd(PAD, W - PAD - platW1), y: topY - 26 * K, w: platW1, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(28, 40) * K },
-      { x: rnd(PAD, W - PAD - platW2), y: topY - 52 * K, w: platW2, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(28, 40) * K },
+      { x: clamp(rnd(W * 0.28, W * 0.72) - platW1 / 2, PAD, W - PAD - platW1), y: topY - 30 * K, w: platW1, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(22, 32) * K },
+      { x: clamp(W / 2 + rnd(-40, 40) * K - platW2 / 2, PAD, W - PAD - platW2), y: topY - 58 * K, w: platW2, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(18, 26) * K },
     ];
     const condor = { x: W / 2, y: topY - BONUS_ZONE };
 
@@ -296,10 +394,90 @@
     p.grounded = true; p.groundedRow = 0; p.groundedPlat = null;
     p.facing = 1;
     p.stun = 0; p.invuln = 0; p.attackTimer = 0; p.safeTimer = 0; p.avoidTimer = 0;
+    p.stuckCount = 0; p.lastJumpRow = -1; p.pauseExtra = 0;
     p.bonusPhase = false; p.bonusStage = 0; p.bonusTimeLeft = BONUS_TIME;
     p.doneThisRound = false;
     p.airTargetX = p.x;
     if (!p.anim) p.anim = { mode: CELS.idle, f: 0, t: CELS.idle[0] };
+  }
+
+  // getting hit by a falling durian knocks you hard into open air — you fall
+  // through empty space until the nearest floor below actually catches you
+  // (which could cost you many rows of progress), not a teleport to the very
+  // bottom of the mountain.
+  function resetToBottom(state, p) {
+    p.vy = 420 * K; p.vx = (Math.random() < 0.5 ? -1 : 1) * 140 * K;
+    p.grounded = false; p.bonusPhase = false;
+    p.stuckCount = 0; p.lastJumpRow = -1; p.avoidTimer = 0; p.safeTimer = 0;
+    p.stun = STUN_TIME; p.invuln = INVULN_TIME * 1.5;
+    p.falls++;
+    spawnParticles(state, p.x, p.y, C.durian, 12);
+    SFX.knock();
+    state.hitStop = Math.max(state.hitStop, 0.12);
+    say(state, p, 'durian');
+  }
+
+  // ---- random events (potions) -----------------------------------------------
+  // Every ~20-30s something shifts the rules for a while — good or bad. Boosts
+  // and hazards both work through the same physics/collision code every other
+  // tick already uses (jumpBoost multiplies JUMP_VY, speedBoost multiplies
+  // MOVE_SPEED, durianStorm just speeds up the existing durian spawner), so the
+  // AI doesn't need special-case awareness — it reacts to the resulting world
+  // exactly like it reacts to any other row/hazard state, precisely and live.
+  function triggerRandomEvent(state) {
+    const pool = ['jumpBoost', 'speedBoost', 'durianStorm', 'collapse', 'lift'];
+    const kind = pool[Math.floor(Math.random() * pool.length)];
+    const banner = (text, color) => { state.eventBanner = { text, life: 2.4, color }; };
+    switch (kind) {
+      case 'jumpBoost':
+        state.jumpBoost = 1.5; state.activeEvent = kind; state.eventUntil = state.clock + 10;
+        banner('SPRING ICE — HIGHER JUMPS!', C.condorAccent);
+        break;
+      case 'speedBoost':
+        state.speedBoost = 1.45; state.activeEvent = kind; state.eventUntil = state.clock + 10;
+        banner('TAILWIND — FASTER FEET!', C.condorAccent);
+        break;
+      case 'durianStorm':
+        state.durianStormUntil = state.clock + 8; state.durianTimer = 0.4;
+        banner('DURIAN STORM INCOMING!', C.durian);
+        break;
+      case 'collapse': {
+        const row = 1 + Math.floor(Math.random() * (TOP_ROW - 1));
+        for (const p of state.players) {
+          if (p.carried || p.doneThisRound || p.bonusPhase) continue;
+          if (p.groundedRow >= row) {
+            const target = Math.max(0, row - 1);
+            p.groundedRow = target; p.y = state.rows[target].y - PLAYER_H;
+            p.vx = 0; p.vy = 0; p.grounded = true; p.invuln = INVULN_TIME; p.falls++;
+            spawnParticles(state, p.x, p.y, C.ledgeBase, 10);
+          }
+        }
+        SFX.bear();
+        banner('FLOOR ' + (row + 1) + ' GAVE WAY!', C.durianSpike);
+        break;
+      }
+      case 'lift': {
+        for (const p of state.players) {
+          if (p.carried || p.doneThisRound || p.bonusPhase) continue;
+          const target = Math.min(TOP_ROW, p.groundedRow + 1);
+          p.groundedRow = target; p.y = state.rows[target].y - PLAYER_H;
+          p.vy = 0; p.grounded = true;
+          spawnParticles(state, p.x, p.y, C.islandCrust, 10);
+          if (target === TOP_ROW && !p.bonusPhase && !p.doneThisRound) {
+            p.bonusPhase = true; p.bonusStage = 0; p.bonusTimeLeft = BONUS_TIME;
+          }
+        }
+        SFX.summit(false);
+        banner('ICE LIFT — UP YOU GO!', C.condorAccent);
+        break;
+      }
+    }
+  }
+
+  function clearEvent(state) {
+    state.activeEvent = null;
+    state.jumpBoost = 1;
+    state.speedBoost = 1;
   }
 
   function makePlayer(id, name, personality, human) {
@@ -321,20 +499,56 @@
     resetPlayerToStart(p2, 22);
     resetPlayerToStart(p3, 0);
     p3.carried = true;
-    p3.carrierId = p1.id;
+    p3.carrierId = p2.id;
 
     return {
       rows: mountain.rows, enemies: mountain.enemies,
       bonusPlatforms: mountain.bonusPlatforms, condor: mountain.condor,
       condorClaimedBy: null,
       veggies: [], vegTimer: rnd(3, 5),
+      durians: [], durianTimer: rnd(5, 8),
+      adamCommentTimer: rnd(14, 22),
       particles: [], popups: [], speech: [],
       players: [p1, p2, p3],
       roundComplete: false, bannerTimer: 0, roundTime: 0,
       pressureY: H + 40, bearActive: false,
       clock: 0, hitStop: 0, roundIndex: 0,
       condorAnim: { f: 0, t: CELS.condor[0] }, bearAnim: { f: 0, t: CELS.bear[0] },
+      eventTimer: rnd(18, 26), activeEvent: null, eventUntil: 0, eventBanner: null,
+      jumpBoost: 1, speedBoost: 1, durianStormUntil: 0,
+      cameraY: 0,
     };
+  }
+
+  // World y DECREASES as a climber goes up (row0 near START_Y, the summit near
+  // 0 or negative). So as the leader climbs, cameraY must go negative too —
+  // translate(0,-cameraY) then pushes everything down by that same amount,
+  // keeping the leader on screen. cameraY's valid range is therefore
+  // [minScroll, 0]: 0 at the very start (no scroll needed yet), down to
+  // minScroll once the summit is fully revealed.
+  function updateCamera(state, dt) {
+    let highestY = state.rows[0].y;
+    for (const p of state.players) {
+      if (p.carried || p.doneThisRound) continue;
+      if (p.y < highestY) highestY = p.y;
+    }
+    const rawTarget = highestY - H * CAMERA_ANCHOR;
+    const topY = state.rows[TOP_ROW].y;
+    // generous margin above the condor — bonus-phase jump arcs can carry a
+    // climber noticeably higher than the condor's own y for a moment
+    const minScroll = (topY - BONUS_ZONE - 220 * K) - H * CAMERA_ANCHOR;
+    const target = clamp(rawTarget, minScroll, 0);
+    state.cameraY += (target - state.cameraY) * Math.min(1, dt * 9);
+
+    // hard safety net, keyed to the single leading climber only — checking
+    // every player individually let two climbers at very different heights
+    // fight over cameraY each tick, with whichever was processed last winning
+    // and undoing the other's fix. The leader is what the camera should
+    // guarantee; a trailing climber may briefly sit outside the frame.
+    const topMargin = 150 * K;
+    const leaderScreenY = highestY - state.cameraY;
+    if (leaderScreenY < topMargin) state.cameraY = highestY - topMargin;
+    state.cameraY = clamp(state.cameraY, minScroll, 0);
   }
 
   function regenerateMountain(state) {
@@ -346,6 +560,7 @@
     state.condor = mountain.condor;
     state.condorClaimedBy = null;
     state.veggies = [];
+    state.durians = [];
     state.roundTime = 0;
     state.pressureY = H + 40;
     state.bearActive = false;
@@ -361,14 +576,10 @@
   // forward-simulate a bouncing patrol (topi or nitpicker) over `t` seconds —
   // this is what lets USHER dodge where a threat is *heading*, not just where
   // it stands right now.
-  function predictBounceX(x, dir, speed, t, lo, hi, row) {
+  function predictBounceX(x, dir, speed, t, lo, hi) {
     const steps = 6, sdt = t / steps;
     for (let i = 0; i < steps; i++) {
       x += dir * speed * sdt;
-      if (row && row.hole && x > row.hole.x - 8 && x < row.hole.x + row.hole.w + 8) {
-        x = x < row.hole.x + row.hole.w / 2 ? row.hole.x - 8 : row.hole.x + row.hole.w + 8;
-        dir *= -1;
-      }
       if (x < lo) { x = lo; dir = 1; }
       if (x > hi) { x = hi; dir = -1; }
     }
@@ -384,10 +595,12 @@
       if (e.type === 'topi') {
         if (e.row !== p.groundedRow) continue;
         const row = state.rows[e.row];
-        ex = predictT > 0 ? predictBounceX(e.x, e.dir, e.speed, predictT, PAD + 8, W - PAD - 8, row) : e.x;
+        const plat = row.platform;
+        const lo = plat ? plat.x + 4 * K : PAD + 8, hi = plat ? plat.x + plat.w - 4 * K : W - PAD - 8;
+        ex = predictT > 0 ? predictBounceX(e.x, e.dir, e.speed, predictT, lo, hi) : e.x;
         ey = row.y - 8 * K;
       } else {
-        ex = predictT > 0 ? predictBounceX(e.x, e.dir, e.speed, predictT, PAD + 8, W - PAD - 8, null) : e.x;
+        ex = predictT > 0 ? predictBounceX(e.x, e.dir, e.speed, predictT, PAD + 8, W - PAD - 8) : e.x;
         if (predictT > 0) {
           const centerY = state.rows[e.baseRow].y - ROW_H * 0.5;
           ey = centerY + Math.sin(e.phase + 1.6 * predictT) * ROW_H * 0.6;
@@ -436,6 +649,24 @@
       return { left: dx < -3, right: dx > 3, jump: false, attack: false };
     }
 
+    // falling durians have no patrol pattern to predict and are instantly
+    // costly — dodge one on a real collision course before anything else,
+    // the same "slide out of the way" a human would do during a storm wave
+    const durianTargetY = p.y + PLAYER_H / 2;
+    let durianDx = null, durianT = Infinity;
+    for (const d of state.durians) {
+      if (d.y > durianTargetY) continue;
+      const t = (durianTargetY - d.y) / d.vy;
+      if (t < 0 || t > 0.85) continue;
+      const dx = wrapDelta(d.x, p.x, W);
+      if (Math.abs(dx) > 46 * K) continue;
+      if (t < durianT) { durianT = t; durianDx = dx; }
+    }
+    if (durianDx !== null) {
+      const dir = durianDx >= 0 ? -1 : 1;
+      return { left: dir < 0, right: dir > 0, jump: false, attack: false };
+    }
+
     const perc = p.personality;
     // melee decision uses real current positions — you swing at what's actually there
     const nowThreats = gatherThreats(state, p).sort((a, b) => a.d - b.d);
@@ -462,49 +693,158 @@
     }
 
     const row = state.rows[p.groundedRow];
-    if (row.hole) {
-      const hc = row.hole.x + row.hole.w / 2;
-      const margin = perc.holeMargin + row.hole.w / 2;
-      const hdx = wrapDelta(p.x, hc, W);
-      if (Math.abs(hdx) < margin) {
-        const dir = hdx < 0 ? -1 : 1;
-        return { left: dir < 0, right: dir > 0, jump: false, attack: false };
+    const nextRow = p.groundedRow < TOP_ROW ? state.rows[p.groundedRow + 1] : null;
+    // stuck 3+ jumps in a row without gaining a floor? stop repeating the same
+    // approach and try the far side instead — "take another path." Still stuck
+    // after that (a genuinely hostile row)? stop being picky about position
+    // entirely and just keep swinging — guarantees forward progress eventually
+    // rather than possibly cycling between two imperfect approaches forever.
+    const rerouting = p.stuckCount >= 3;
+    if (p.stuckCount >= 8) {
+      p.safeTimer += dt;
+      if (p.safeTimer > 0.08) {
+        p.safeTimer = 0;
+        p.airTargetX = p.x;
+        return { left: false, right: false, jump: true, attack: false };
       }
+      return { left: false, right: false, jump: false, attack: false };
     }
+
+    // where the NEXT jump actually needs to land — every mid-row is a short
+    // offset platform now (like the real game's zigzag ledges), so reaching it
+    // almost always means crossing real horizontal distance, not just going up
+    let trueTargetX = p.x;
+    if (nextRow && !nextRow.full) {
+      const np = nextRow.platform;
+      const predictedX = np.drift
+        ? predictBounceX(np.x, np.drift.dir, np.drift.speed, 0.5, np.drift.min, np.drift.max)
+        : np.x;
+      const center = clamp(predictedX + np.w / 2, PAD + 8 * K, W - PAD - 8 * K);
+      const edge = p.x < center ? predictedX + np.w - 8 * K : predictedX + 8 * K;
+      trueTargetX = rerouting ? edge : center;
+    }
+
+    // walking target stays on the CURRENT platform (don't march off the edge
+    // lining up) — the rest of the gap gets closed by air-steering mid-jump
+    let walkTargetX = trueTargetX;
+    if (!row.full && row.platform) {
+      walkTargetX = clamp(trueTargetX, row.platform.x + 4 * K, row.platform.x + row.platform.w - 4 * K);
+    }
+
+    const tdx = wrapDelta(p.x, walkTargetX, W);
+    if (Math.abs(tdx) > 5 * K) {
+      const dir = tdx < 0 ? 1 : -1;
+      return { left: dir < 0, right: dir > 0, jump: false, attack: false };
+    }
+
+    // the platform underfoot is about to give way — go now, alignment be damned
+    const plat = row.platform;
+    const urgent = plat && plat.crack && !plat.broken && plat.crack.timer > plat.crack.maxTime * 0.7;
 
     for (const other of state.players) {
       if (other === p || other.carried) continue;
       const odx = wrapDelta(other.x, p.x, W);
-      if (other.groundedRow === p.groundedRow && other.grounded && Math.abs(odx) < 14) {
+      if (other.groundedRow === p.groundedRow && other.grounded && Math.abs(odx) < 14 && !urgent) {
         const dir = odx > 0 ? -1 : 1;
         return { left: dir < 0, right: dir > 0, jump: false, attack: false };
       }
     }
 
+    // a real pause before committing, not a robotic instant-jump every safe
+    // tick — rolled once per wait so it doesn't flicker, refreshed after
+    // every jump. USHER thinks it over more often than NAYKILLA does.
     p.safeTimer += dt;
-    if (p.safeTimer > perc.jumpHesitation) {
+    if (p.safeTimer <= dt) p.pauseExtra = Math.random() < perc.pauseChance ? rnd(0.15, 0.5) : 0;
+    if (urgent || p.safeTimer > perc.jumpHesitation + p.pauseExtra) {
       p.safeTimer = 0;
-      p.airTargetX = p.x;
+      p.airTargetX = trueTargetX;
       return { left: false, right: false, jump: true, attack: false };
     }
     return { left: false, right: false, jump: false, attack: false };
   }
 
   // ---- dialogue ---------------------------------------------------------------
+  // 100+ lines across every major event, kept short enough for a small bubble.
+  // A few pools are personality-specific (NAYKILLA reckless, USHER dry, ADAM
+  // self-aware about being the human) — say() picks the matching variant when
+  // one exists, otherwise falls back to the shared pool.
   const DIALOGUE = {
-    summit: ['MADE IT!', 'TOP OF THE WORLD!', 'YES!!', 'SUMMIT SECURED.', 'TOO EASY.', 'WHO\'S NEXT?'],
-    encourage: ['NICE ONE!', 'GO GO GO!', 'SHOW OFF.', 'MY TURN NEXT!', 'GG!', 'GUESS I\'M SLOW...'],
-    fall: ['OH SHOOT!', 'OUCH!', 'NOT AGAIN...', 'WHOA!', 'OOF.', 'RUDE.'],
+    summit: [
+      'MADE IT!', 'TOP OF THE WORLD!', 'YES!!', 'SUMMIT SECURED.', 'TOO EASY.', "WHO'S NEXT?",
+      'PEAK GET.', 'CALLED IT.', 'ANOTHER ONE.', 'KING OF THE HILL.', "DIDN'T EVEN BREAK A SWEAT.",
+      'FLAG PLANTED.', 'THAT NEVER GETS OLD.', 'ONE MORE FOR THE PILE.', 'VIEW\'S NICE UP HERE.',
+      'AND THAT\'S HOW IT\'S DONE.',
+    ],
+    summit_NAYKILLA: ['RACE YOU DOWN NEXT TIME.', 'BARELY TRIED.', 'HA! FIRST AGAIN.'],
+    summit_USHER: ['As calculated.', 'Textbook ascent.', 'Precision pays off.'],
+    summit_ADAM: ['not bad for a human.', 'take THAT, bots.', 'adam: 1, mountain: 0'],
+    encourage: [
+      'NICE ONE!', 'GO GO GO!', 'SHOW OFF.', 'MY TURN NEXT!', 'GG!', "GUESS I'M SLOW...",
+      'GET IT!', 'GOOD CLIMB.', "SHOW-OFF.", 'CARRY ME NEXT TIME.', "I'LL CATCH UP.",
+      'CLASSY LANDING.', 'RUB IT IN, WHY DON\'T YOU.', 'FINE, IMPRESSIVE.', 'OKAY OKAY, NICE.',
+      "DON'T GET COCKY.",
+    ],
+    encourage_NAYKILLA: ["BEAT YOU NEXT TIME.", "LUCKY RUN.", "I WAS DISTRACTED, OKAY."],
+    encourage_USHER: ["Efficient.", "Duly noted.", "A reasonable result."],
+    encourage_ADAM: ['show off much, adam?', 'the human strikes again.', 'okay THAT was actually good.'],
+    fall: [
+      'OH SHOOT!', 'OUCH!', 'NOT AGAIN...', 'WHOA!', 'OOF.', 'RUDE.',
+      'WHO PUT THAT THERE.', 'I MEANT TO DO THAT.', 'OKAY, RESET.', 'THAT STINGS.',
+      'DIDN\'T SEE THAT COMING.', 'BACK TO THE DRAWING BOARD.', 'ONE SEC.', 'YIKES.',
+      'STYLE POINTS, AT LEAST.', 'NOTED. AVOID THAT.',
+    ],
+    fall_NAYKILLA: ["WORTH THE RISK.", "MINOR SETBACK.", "STILL FASTER THAN YOU."],
+    fall_USHER: ["I should have predicted that.", "Recalculating.", "An acceptable loss."],
+    fall_ADAM: ['my controller slipped.', 'rigged. definitely rigged.', 'okay THAT was a bug, right?'],
+    durian: [
+      'A DURIAN?! REALLY?', 'WHY IS FRUIT FALLING.', 'NOT THE SPIKY ONE.', 'STRAIGHT TO THE BOTTOM.',
+      'WHO IS THROWING THESE.', 'SMELLS AS BAD AS IT HURTS.', 'FRUIT AMBUSH.', 'BACK TO SQUARE ONE.',
+      'THAT ONE HURT.', "SPIKES. WHY SPIKES.", 'DURIAN: 1, ME: 0.', 'STARTING OVER, GREAT.',
+    ],
+    attack: [
+      'HAMMER TIME.', 'CLEAR!', 'OUT OF MY WAY.', 'NICE TRY.', 'SWATTED.', 'TOO SLOW.',
+      'ONE HIT.', 'NOT TODAY.', 'BACK OFF.', 'DEALT WITH.',
+    ],
+    breakIce: [
+      'CRACK!', 'THROUGH!', 'ICE, MEET HAMMER.', 'OPEN UP.', 'ALMOST THERE.', 'ONE MORE HIT.',
+      'BREAKING THROUGH.', 'THAT\'S THE SPOT.',
+    ],
+    veggie: [
+      'SNACK GET.', 'BONUS!', 'DON\'T MIND IF I DO.', 'TASTY.', 'FUEL UP.', 'FREE POINTS.',
+      'YOINK.', 'MINE NOW.',
+    ],
+    carried: [
+      'HOP ON!', 'GOT YOU.', 'ALL ABOARD.', 'FREE RIDE, ADAM.', "DON'T FALL ASLEEP UP THERE.",
+      "I'VE GOT THIS ONE.", 'BASKET CLASS: OPEN.', 'HANG ON TIGHT.', 'ADAM, INCOMING PICKUP.',
+      "NAP TIME FOR ADAM.",
+    ],
+    hopOut: [
+      "I'VE GOT IT FROM HERE.", 'OKAY, MY TURN.', "ADAM'S BACK.", 'LET ME DOWN, THANKS.',
+      'BACK IN CONTROL.', "OKAY, I'M UP.", 'HUMAN TAKEOVER.', "ADAM RETURNS.",
+      "ALRIGHT, WATCH THIS.", "I CAN WALK, YOU KNOW.",
+    ],
+    aboutAdam: [
+      'WHERE\'S ADAM GONE?', 'ADAM, YOU AWAKE?', 'ADAM IS BEING CARRIED AGAIN.', 'CLASSIC ADAM.',
+      'ADAM, ANY DAY NOW.', 'IS ADAM EVEN PLAYING?', 'ADAM\'S TAKING A NAP UP HERE.',
+      'SOMEONE WAKE ADAM UP.', 'ADAM, PRESS A BUTTON.', 'ADAM JUST WATCHING, AS USUAL.',
+      'CARRYING ADAM AGAIN, NO BIG DEAL.', 'ADAM WOKE UP AND CHOSE VIOLENCE.',
+      'RESPECT FOR ADAM, ACTUALLY TRYING.', 'ADAM\'S GETTING GOOD AT THIS.', 'GO ADAM GO.',
+    ],
   };
   function say(state, p, pool) {
     if (state.speech.some(s => s.ownerId === p.id && s.life > 0)) return; // one bubble at a time
-    const lines = DIALOGUE[pool];
+    const named = DIALOGUE[pool + '_' + p.name];
+    const lines = (named && Math.random() < 0.4) ? named : DIALOGUE[pool];
     const text = lines[Math.floor(Math.random() * lines.length)];
-    state.speech.push({ x: p.x, y: p.y, text, life: 2.2, color: p.colors.body, ownerId: p.id });
+    state.speech.push({ x: p.x, y: p.y, text, life: 2.4, color: p.colors.body, ownerId: p.id });
   }
   function sayEncourage(state, aboutId) {
     const other = state.players.find(pl => pl.id !== aboutId && !pl.carried && !pl.doneThisRound);
     if (other) say(state, other, 'encourage');
+  }
+  function sayAboutAdam(state) {
+    const speaker = state.players.find(pl => !pl.human && !pl.carried && !pl.doneThisRound);
+    if (speaker && Math.random() < 0.5) say(state, speaker, 'aboutAdam');
   }
 
   // ---- combat ----------------------------------------------------------------
@@ -515,14 +855,15 @@
     spawnParticles(state, enemy.x, enemy.y || state.rows[enemy.row].y - 8, C.topi);
     SFX.hit();
     state.hitStop = Math.max(state.hitStop, 0.06);
+    if (Math.random() < 0.35) say(state, attacker, 'attack');
   }
 
   function respawnEnemy(state, e) {
     if (e.type === 'topi') {
       e.row = 1 + Math.floor(Math.random() * (TOP_ROW - 1));
-      e.x = rnd(PAD + 10, W - PAD - 10);
+      const plat = state.rows[e.row].platform;
+      e.x = plat ? rnd(plat.x + 4 * K, plat.x + plat.w - 4 * K) : rnd(PAD + 10, W - PAD - 10);
       e.dir = Math.random() < 0.5 ? -1 : 1;
-      e.fillTimer = rnd(5, 9);
     } else {
       const lo = Math.min(2, TOP_ROW - 1);
       e.baseRow = lo + Math.floor(Math.random() * Math.max(1, TOP_ROW - lo));
@@ -532,14 +873,41 @@
     e.alive = true;
   }
 
-  function updateHoles(state, dt) {
-    for (const row of state.rows) {
-      const h = row.hole;
-      if (!h || !h.drift) continue;
-      h.x += h.drift.speed * h.drift.dir * dt;
-      if (h.x < PAD) { h.x = PAD; h.drift.dir = 1; }
-      if (h.x > W - PAD - h.w) { h.x = W - PAD - h.w; h.drift.dir = -1; }
-    }
+  function updatePlatforms(state, dt) {
+    state.rows.forEach((row, i) => {
+      if (row.full || !row.platform) return;
+      const p = row.platform;
+
+      if (p.broken) {
+        p.respawnTimer -= dt;
+        if (p.respawnTimer <= 0) {
+          // respawn near its ORIGINAL spot, not a fresh random half of the
+          // screen — neighboring rows were placed reachable from homeX, and a
+          // wholly new random spot could reintroduce an uncrossable gap
+          p.x = clamp(p.homeX + rnd(-12, 12) * K, PAD, W - PAD - p.w);
+          p.broken = false;
+          if (p.crack) p.crack.timer = 0;
+        }
+        return;
+      }
+
+      if (p.drift) {
+        p.x += p.drift.speed * p.drift.dir * dt;
+        if (p.x < p.drift.min) { p.x = p.drift.min; p.drift.dir = 1; }
+        if (p.x > p.drift.max) { p.x = p.drift.max; p.drift.dir = -1; }
+      }
+
+      if (p.crack) {
+        const occupied = state.players.some(pl =>
+          !pl.carried && pl.grounded && pl.groundedRow === i && pl.x > p.x && pl.x < p.x + p.w);
+        if (occupied) {
+          p.crack.timer += dt;
+          if (p.crack.timer >= p.crack.maxTime) { p.broken = true; p.respawnTimer = rnd(2.5, 4); }
+        } else {
+          p.crack.timer = Math.max(0, p.crack.timer - dt * 0.6);
+        }
+      }
+    });
   }
 
   function updateEnemies(state, dt) {
@@ -552,23 +920,13 @@
       if (e.type === 'topi') {
         tickCel(e.anim, CELS.topi, dt);
         const row = state.rows[e.row];
+        const plat = row.platform;
+        // patrols stay on its own short ledge — the row band is mostly open
+        // air now, so a full-width patrol would walk the topi off into space
+        const lo = plat ? plat.x + 4 * K : PAD + 8, hi = plat ? plat.x + plat.w - 4 * K : W - PAD - 8;
         e.x += e.dir * e.speed * dt;
-        if (row.hole && e.x > row.hole.x - 8 && e.x < row.hole.x + row.hole.w + 8) {
-          e.x = e.x < row.hole.x + row.hole.w / 2 ? row.hole.x - 8 : row.hole.x + row.hole.w + 8;
-          e.dir *= -1;
-        }
-        if (e.x < PAD + 8) { e.x = PAD + 8; e.dir = 1; }
-        if (e.x > W - PAD - 8) { e.x = W - PAD - 8; e.dir = -1; }
-        e.fillTimer -= dt;
-        if (e.fillTimer <= 0) {
-          e.fillTimer = rnd(5, 9);
-          if (row.hole && Math.abs(e.x - (row.hole.x + row.hole.w / 2)) < 34) {
-            row.hole.w -= 18;
-            row.hole.x += 9;
-            if (row.hole.w < 10) row.hole = null;
-            row.hole && (row.hole.x = clamp(row.hole.x, 12, W - 12 - row.hole.w));
-          }
-        }
+        if (e.x < lo) { e.x = lo; e.dir = 1; }
+        if (e.x > hi) { e.x = hi; e.dir = -1; }
       } else {
         tickCel(e.anim, CELS.nit, dt);
         e.x += e.dir * e.speed * dt;
@@ -598,16 +956,29 @@
       return;
     }
 
-    const moveSpeed = p.grounded ? MOVE_SPEED : AIR_MOVE_SPEED;
-    p.vx = 0;
+    // icy footing: velocity eases toward the target instead of snapping, so
+    // starting, stopping and turning all carry a bit of a slide.
+    const moveSpeed = (p.grounded ? MOVE_SPEED : AIR_MOVE_SPEED) * state.speedBoost;
+    let targetVx = 0;
     if (p.stun <= 0) {
-      if (input.left) { p.vx = -moveSpeed; p.facing = -1; }
-      if (input.right) { p.vx = moveSpeed; p.facing = 1; }
+      if (input.left) { targetVx = -moveSpeed; p.facing = -1; }
+      if (input.right) { targetVx = moveSpeed; p.facing = 1; }
+    }
+    const accel = (targetVx === 0 ? 520 : 780) * K;
+    if (p.vx < targetVx) p.vx = Math.min(targetVx, p.vx + accel * dt);
+    else if (p.vx > targetVx) p.vx = Math.max(targetVx, p.vx - accel * dt);
+
+    if (p.stun <= 0) {
       if (input.jump && p.grounded) {
-        p.vy = JUMP_VY; p.grounded = false; SFX.jump();
+        p.vy = JUMP_VY * state.jumpBoost; p.grounded = false; p.lastJumpRow = p.groundedRow; SFX.jump();
       }
     }
-    p.vy += GRAVITY * dt;
+    // AI always holds for the full, tuned apex (matches the row-clearance
+    // margins everything else is built on); a human can let go early to cut
+    // the jump short, exactly like the original Mario variable-height jump.
+    const holdingJump = p.human ? keys.up : true;
+    const gravityMult = (p.vy < 0 && holdingJump) ? ASCEND_MULT : DESCEND_MULT;
+    p.vy += GRAVITY * gravityMult * dt;
     if (p.bonusPhase) p.x = clamp(p.x + p.vx * dt, PAD, W - PAD); // small contained zone
     else p.x = wrap(p.x + p.vx * dt, W); // main field: walk off one edge, appear on the other
 
@@ -619,37 +990,23 @@
     if (!p.bonusPhase) {
       if (p.grounded) {
         const row = state.rows[p.groundedRow];
-        if (row.hole && p.x > row.hole.x && p.x < row.hole.x + row.hole.w) p.grounded = false;
-      }
-      if (p.vy < 0 && p.groundedRow < TOP_ROW) {
-        const ceiling = state.rows[p.groundedRow].ceilingAbove;
-        if (ceiling && ceiling.alive) {
-          const bandTop = state.rows[p.groundedRow + 1].y;
-          const bandBottom = bandTop + CEIL_T;
-          if (top <= bandBottom && bottom >= bandTop) {
-            ceiling.hp -= 1;
-            SFX.breakBlock(ceiling.hp);
-            if (ceiling.hp <= 0) {
-              ceiling.alive = false; // broken through — keep rising, carried by this same jump
-              spawnParticles(state, p.x, bandTop, C.ceil, 14); // big satisfying burst on the break
-              spawnParticles(state, p.x, bandTop, C.ceilShade, 8);
-            } else {
-              spawnParticles(state, p.x, bandTop, C.ceil, 6);
-              p.vy = 140; // still solid — bounce back for another attempt
-              top = bandBottom - 0.1; p.y = top; bottom = p.y + PLAYER_H;
-            }
-          }
-        }
+        if (rowHazardAt(row, p.x)) p.grounded = false;
+        else if (!row.full && row.platform.drift) p.x = wrap(p.x + row.platform.drift.dir * row.platform.drift.speed * dt, W); // ride the platform
       }
       let landedRow = false;
       if (p.vy >= 0) {
         for (let i = 0; i <= TOP_ROW; i++) {
           const row = state.rows[i];
-          if (row.hole && p.x > row.hole.x && p.x < row.hole.x + row.hole.w) continue;
+          if (rowHazardAt(row, p.x)) continue;
           if (prevBottom <= row.y && bottom >= row.y) {
             p.y = row.y - PLAYER_H; p.vy = 0; p.grounded = true; p.groundedRow = i;
             bottom = p.y + PLAYER_H;
             landedRow = true;
+            if (p.lastJumpRow >= 0) {
+              // did that jump actually gain a floor, or land back where it started?
+              p.stuckCount = i > p.lastJumpRow ? 0 : p.stuckCount + 1;
+              p.lastJumpRow = -1;
+            }
             if (i === TOP_ROW && !p.bonusPhase && !p.doneThisRound) {
               p.bonusPhase = true; p.bonusStage = 0; p.bonusTimeLeft = BONUS_TIME;
             }
@@ -705,6 +1062,12 @@
       if (p.vy < 0) p.grounded = false;
       if (p.vy > 0 && !landed) p.grounded = false; // safety: never stay "grounded" mid-fall
 
+      // hard ceiling on the bonus stage itself — a jump arc shouldn't be able
+      // to carry a climber far above the condor; this also keeps the camera's
+      // job bounded, since it only has to reveal a fixed amount above the peak
+      const bonusCeiling = state.condor.y - 60 * K;
+      if (p.y < bonusCeiling) { p.y = bonusCeiling; if (p.vy < 0) p.vy = 0; }
+
       const cdx = Math.abs(p.x - state.condor.x), cdy = Math.abs((p.y + PLAYER_H / 2) - state.condor.y);
       if (cdx < 18 * K && cdy < 18 * K && !p.doneThisRound) {
         p.doneThisRound = true;
@@ -732,6 +1095,7 @@
     state.clock += dt; // sim-time clock driving all cel animation — scales correctly with speed
     tickCel(state.condorAnim, CELS.condor, dt);
     tickCel(state.bearAnim, CELS.bear, dt);
+    updateCamera(state, dt);
 
     if (state.hitStop > 0) { state.hitStop -= dt; return; } // brief freeze-frame on impacts
 
@@ -751,6 +1115,7 @@
       p3.grounded = carrier.grounded; p3.groundedRow = carrier.groundedRow;
       p3.bonusPhase = carrier.bonusPhase; p3.bonusStage = carrier.bonusStage || 0;
       p3.bonusTimeLeft = BONUS_TIME; p3.doneThisRound = false; p3.invuln = INVULN_TIME;
+      if (Math.random() < 0.5) say(state, p3, 'hopOut');
     };
     const nearestCompanion = () => {
       let nearest = null, bestD = Infinity;
@@ -776,6 +1141,7 @@
         if (nearest && bestD < INTERACT_RANGE) {
           p3.carried = true; p3.carrierId = nearest.id;
           lastHumanInput = -Infinity; // just chose to rest — don't immediately reclaim control
+          if (Math.random() < 0.5) say(state, nearest, 'carried');
         }
       }
     }
@@ -786,7 +1152,9 @@
       hopOut();
     } else if (!p3.carried && !humanActive) {
       const { nearest } = nearestCompanion();
-      p3.carried = true; p3.carrierId = (nearest || state.players[0]).id;
+      const carrier = nearest || state.players[0];
+      p3.carried = true; p3.carrierId = carrier.id;
+      if (Math.random() < 0.5) say(state, carrier, 'carried');
     }
 
     if (!state.bearActive && state.roundTime > PRESSURE_DELAY) { state.bearActive = true; SFX.bear(); }
@@ -807,8 +1175,33 @@
       }
     }
 
-    updateHoles(state, dt);
+    updatePlatforms(state, dt);
     updateEnemies(state, dt);
+
+    // fall too far behind the camera's view of the action — same as the real
+    // game's screen-scroll kill — and you're swept back in near the leader's
+    // current floor rather than left to climb all the way back up alone
+    {
+      const approxLeaderY = state.cameraY + H * CAMERA_ANCHOR;
+      const leaderRow = clamp(Math.round((START_Y - approxLeaderY) / ROW_H), 0, TOP_ROW);
+      for (const p of state.players) {
+        if (p.carried || p.doneThisRound || p.bonusPhase || p.invuln > 0) continue;
+        const screenY = p.y - state.cameraY;
+        if (screenY <= H + 40 * K) continue;
+        const target = clamp(leaderRow - 1, 0, TOP_ROW);
+        const row = state.rows[target];
+        p.groundedRow = target;
+        p.x = row.full || !row.platform
+          ? clamp(p.x, PAD + 6 * K, W - PAD - 6 * K)
+          : clamp(p.x, row.platform.x + 6 * K, row.platform.x + row.platform.w - 6 * K);
+        p.y = row.y - PLAYER_H; p.vx = 0; p.vy = 0; p.grounded = true;
+        p.invuln = INVULN_TIME; p.stun = 0.2;
+        p.stuckCount = 0; p.lastJumpRow = -1; p.avoidTimer = 0; p.safeTimer = 0;
+        p.falls++;
+        spawnParticles(state, p.x, p.y, C.bear, 10);
+        say(state, p, 'fall');
+      }
+    }
 
     for (const p of state.players) {
       if (p.carried) {
@@ -837,11 +1230,70 @@
       for (const p of state.players) {
         if (p.carried || p.doneThisRound) continue;
         if (Math.abs(wrapDelta(v.x, p.x, W)) < 15 * K && Math.abs(v.y - (p.y + PLAYER_H / 2)) < 16 * K) {
-          p.score += 30; spawnParticles(state, v.x, v.y, C.veg); SFX.veg(); caught = true; break;
+          p.score += 30; spawnParticles(state, v.x, v.y, C.veg); SFX.veg();
+          if (Math.random() < 0.3) say(state, p, 'veggie');
+          caught = true; break;
         }
       }
       if (caught) { state.veggies.splice(i, 1); continue; }
       if (v.y > H + 10) state.veggies.splice(i, 1);
+    }
+
+    state.adamCommentTimer -= dt;
+    if (state.adamCommentTimer <= 0) {
+      state.adamCommentTimer = rnd(16, 26);
+      sayAboutAdam(state);
+    }
+
+    if (state.activeEvent && state.clock > state.eventUntil) clearEvent(state);
+    state.eventTimer -= dt;
+    if (state.eventTimer <= 0) {
+      state.eventTimer = rnd(22, 34);
+      triggerRandomEvent(state);
+    }
+    if (state.eventBanner) {
+      state.eventBanner.life -= dt;
+      if (state.eventBanner.life <= 0) state.eventBanner = null;
+    }
+
+    // durians spawn/despawn in WORLD space, but the mountain scrolls under the
+    // camera now — anchor both to state.cameraY, not a fixed screen coordinate,
+    // or a spawned durian silently falls somewhere the camera has already left
+    const durianStormActive = state.clock < state.durianStormUntil;
+    const spawnY = state.cameraY - 30 * K;
+    state.durianTimer -= dt;
+    if (state.durianTimer <= 0) {
+      if (durianStormActive) {
+        // a real wall of fruit — full-width wave forcing left/right dodging,
+        // not one durian to sidestep
+        state.durianTimer = rnd(0.7, 1.1);
+        const waveCount = 4 + Math.floor(Math.random() * 3); // 4-6 at once
+        const lane = (W - 40 * K) / waveCount;
+        for (let w = 0; w < waveCount; w++) {
+          state.durians.push({
+            x: 20 * K + lane * (w + 0.5) + rnd(-lane * 0.3, lane * 0.3),
+            y: spawnY - rnd(0, 60 * K), vy: 95 * K, spin: rnd(0, 6),
+          });
+        }
+      } else {
+        state.durianTimer = rnd(6, 10);
+        state.durians.push({ x: rnd(20 * K, W - 20 * K), y: spawnY, vy: 60 * K, spin: 0 });
+      }
+    }
+    for (let i = state.durians.length - 1; i >= 0; i--) {
+      const d = state.durians[i];
+      d.y += d.vy * dt;
+      d.spin += dt * 6;
+      let hit = false;
+      for (const p of state.players) {
+        if (p.carried || p.doneThisRound || p.invuln > 0) continue;
+        if (Math.abs(wrapDelta(d.x, p.x, W)) < 16 * K && Math.abs(d.y - (p.y + PLAYER_H / 2)) < 17 * K) {
+          resetToBottom(state, p);
+          hit = true; break;
+        }
+      }
+      if (hit) { state.durians.splice(i, 1); continue; }
+      if (d.y > state.cameraY + H + 20 * K) state.durians.splice(i, 1);
     }
 
     for (let i = state.particles.length - 1; i >= 0; i--) {
@@ -895,72 +1347,138 @@
     ctx.fillRect(Math.round(x), Math.round(y), w, h);
   }
 
+  // two-layer ledge — an icy crust over a packed-ice base, like a snowbound
+  // take on grass-over-dirt — with a few deterministic sparkle flecks on top.
+  function drawTile(x, y, w, thickness, isIsland) {
+    if (w <= 0) return;
+    x = Math.round(x); y = Math.round(y); w = Math.round(w);
+    const crustH = Math.round(thickness * 0.4);
+    ctx.fillStyle = isIsland ? C.islandBase : C.ledgeBase;
+    ctx.fillRect(x, y + crustH, w, thickness - crustH);
+    ctx.fillStyle = isIsland ? C.islandCrust : C.ledge;
+    ctx.fillRect(x, y, w, crustH);
+    ctx.fillStyle = C.ledgeEdge;
+    ctx.fillRect(x, y, w, 2 * K);
+    // brick-block mortar lines — every short platform reads as a stack of
+    // cut ice blocks (matching the reference art) rather than one smooth slab
+    const block = 16 * K;
+    for (let bx = x + block; bx < x + w - 2 * K; bx += block) {
+      ctx.fillRect(Math.round(bx), y, Math.max(1, Math.round(1 * K)), thickness);
+    }
+    ctx.fillStyle = C.ledgeShade;
+    const step = 14 * K;
+    for (let fx = Math.ceil(x / step) * step; fx < x + w - 4 * K; fx += step) {
+      if (Math.floor(fx / step) % 2 === 0) ctx.fillRect(fx, y + crustH * 0.4, 3 * K, 2 * K);
+    }
+  }
+
+  // crack progress lives on the platform itself now (one short ledge, not a
+  // gap carved into a full-width row) — draw the ledge, then overlay stress lines
+  function drawCrackTile(plat, y, thickness) {
+    drawTile(plat.x, y, plat.w, thickness, true);
+    const crack = plat.crack;
+    const t = clamp(crack.timer / crack.maxTime, 0, 1);
+    if (t < 0.15) return; // fresh ice, no visible stress yet
+    const lines = Math.min(4, Math.ceil(t * 4));
+    ctx.fillStyle = t > 0.7 ? C.durianSpike : C.ceilCrack;
+    for (let l = 0; l < lines; l++) {
+      const cx = Math.round(plat.x + (l + 0.5) * (plat.w / lines));
+      ctx.fillRect(cx, y, 2 * K, Math.round(thickness * 0.55));
+    }
+  }
+
   // ---- rendering ----------------------------------------------------------------
   function draw(state) {
     // flat banded sky, not a smooth gradient — real NES hardware had no
     // interpolated blends, only flat tile colors (palette swapped per band).
+    // As the round timer runs out the palette steps toward red — three discrete
+    // stages, not a smooth fade, same "hard cel swap" language as everything else.
+    const urgency = state.bearActive
+      ? clamp((state.roundTime - PRESSURE_DELAY) / Math.max(1, MAX_ROUND_TIME - PRESSURE_DELAY), 0, 1)
+      : 0;
+    const sky = urgency > 0.75 ? [C.skyDanger1, C.skyDanger3, C.skyDanger2]
+      : urgency > 0.4 ? [C.skyWarn1, C.skyWarn3, C.skyWarn2]
+      : [C.sky1, C.sky3, C.sky2];
     const bandH = H / 3;
-    ctx.fillStyle = C.sky1; ctx.fillRect(0, 0, W, bandH);
-    ctx.fillStyle = C.sky3; ctx.fillRect(0, bandH, W, bandH);
-    ctx.fillStyle = C.sky2; ctx.fillRect(0, bandH * 2, W, H - bandH * 2);
+    ctx.fillStyle = sky[0]; ctx.fillRect(0, 0, W, bandH);
+    ctx.fillStyle = sky[1]; ctx.fillRect(0, bandH, W, bandH);
+    ctx.fillStyle = sky[2]; ctx.fillRect(0, bandH * 2, W, H - bandH * 2);
 
+    // gentle wind streaks drifting through the upper sky — purely decorative,
+    // computed straight from the clock so no extra state is needed
+    ctx.fillStyle = 'rgba(238,243,255,0.10)';
+    for (let i = 0; i < 5; i++) {
+      const wx = wrap(i * 173.2 - state.clock * (26 + i * 6), W + 40) - 20;
+      const wy = wrap(i * 61.4, bandH * 1.3) + 10;
+      ctx.fillRect(Math.round(wx), Math.round(wy), 22 * K, 1.5 * K);
+    }
+
+    // stars twinkle on a hard on/off cel, each with its own phase so they
+    // don't all blink together
     ctx.fillStyle = C.starFar;
     for (let i = 0; i < 16; i++) {
+      if (Math.floor((state.clock * 1.4 + i * 0.6)) % 3 === 0) continue;
       const x = wrap(i * 61.3 - parallax.x * 0.4, W);
       const y = wrap(i * 97.1, H);
       ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
     }
     ctx.fillStyle = C.starNear;
     for (let i = 0; i < 14; i++) {
+      if (Math.floor((state.clock * 1.7 + i * 0.9)) % 4 === 0) continue;
       const x = wrap(i * 53.7 - parallax.x, W);
       const y = wrap(i * 91.3 - parallax.y * 0.6, H);
       ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
     }
 
+    // everything below is world-space and scrolls with the climb; the sky above
+    // stays fixed, matching how the original game never scrolled its backdrop
+    ctx.save();
+    ctx.translate(0, -state.cameraY);
+
     const rows = state.rows;
-    for (let i = 0; i < TOP_ROW; i++) {
-      const ceiling = rows[i].ceilingAbove;
-      const bandTop = rows[i + 1].y;
-      if (ceiling && ceiling.alive) {
-        // solid, breakable ice — a visible crack texture from the very first
-        // frame marks it as "this can be broken", not just a plain wall
-        ctx.fillStyle = C.ceil;
-        ctx.fillRect(0, bandTop, W, CEIL_T);
-        ctx.fillStyle = C.ceilShade;
-        ctx.fillRect(0, bandTop + CEIL_T - 2, W, 2);
-        ctx.fillStyle = C.ceilCrack;
-        const hitsTaken = ceiling.maxHp - ceiling.hp;
-        const slots = ceiling.maxHp + 1;
-        for (let c = 0; c < slots; c++) {
-          const cx = Math.round((c + 0.5) * (W / slots));
-          const h = c < hitsTaken ? CEIL_T - 2 : CEIL_T - 5; // deeper cracks the more it's been hit
-          ctx.fillRect(cx, bandTop + 1, 2, h);
-        }
-      } else {
-        // broken through — leave visible shattered icicle stubs so the open
-        // path reads as "cleared", not just empty space that was never there
-        ctx.fillStyle = C.ceilShade;
-        for (let c = 0; c < 5; c++) {
-          const cx = Math.round((c + 0.5) * (W / 5));
-          ctx.fillRect(cx - 1, bandTop, 2, 4);
-        }
-      }
+
+    // jagged icy cave walls frame the climb on both edges — decorative only,
+    // players still wrap through them, but it reads as a mountain interior
+    // rather than open space, matching the reference art's rock border
+    const wallW = 13 * K; // stays inside PAD so it never visually collides with a platform edge
+    for (let i = 0; i <= TOP_ROW; i++) {
+      const bandY = Math.round(rows[i].y - ROW_H);
+      const bandH = Math.round(ROW_H) + 1;
+      const jagL = Math.round((Math.sin(i * 2.7) * 0.5 + 0.5) * 5 * K);
+      const jagR = Math.round((Math.sin(i * 1.9 + 1.3) * 0.5 + 0.5) * 5 * K);
+      const lW = Math.round(wallW + jagL), rW = Math.round(wallW + jagR);
+      ctx.fillStyle = C.wallBody;
+      ctx.fillRect(0, bandY, lW, bandH);
+      ctx.fillRect(W - rW, bandY, rW, bandH);
+      ctx.fillStyle = C.wallShade;
+      ctx.fillRect(0, bandY, Math.round(lW * 0.4), bandH);
+      ctx.fillRect(W - Math.round(rW * 0.4), bandY, Math.round(rW * 0.4), bandH);
+      ctx.fillStyle = C.wallHi;
+      ctx.fillRect(lW - 3 * K, bandY, 3 * K, bandH);
+      ctx.fillRect(W - rW, bandY, 3 * K, bandH);
+      // a couple of chipped ice-block notches per band for a rougher silhouette
+      ctx.fillStyle = C.sky3;
+      ctx.fillRect(Math.round(lW * 0.55), bandY + Math.round(bandH * 0.3), Math.round(4 * K), Math.round(6 * K));
+      ctx.fillRect(W - Math.round(rW * 0.75), bandY + Math.round(bandH * 0.6), Math.round(4 * K), Math.round(6 * K));
     }
 
+    const baseT = PLATFORM_T * 2.2; // thicker two-layer ledge: icy crust over packed base
+    ctx.textAlign = 'left';
+    ctx.font = `${Math.round(11 * K)}px 'Press Start 2P', 'Courier New', monospace`;
     for (let i = 0; i <= TOP_ROW; i++) {
       const row = rows[i], y = row.y;
-      if (row.hole) {
-        ctx.fillStyle = C.ledgeEdge; ctx.fillRect(0, y, row.hole.x, PLATFORM_T);
-        ctx.fillStyle = C.ledge; ctx.fillRect(0, y, row.hole.x, PLATFORM_T - 3);
-        ctx.fillStyle = C.ledgeEdge; ctx.fillRect(row.hole.x + row.hole.w, y, W - (row.hole.x + row.hole.w), PLATFORM_T);
-        ctx.fillStyle = C.ledge; ctx.fillRect(row.hole.x + row.hole.w, y, W - (row.hole.x + row.hole.w), PLATFORM_T - 3);
-        ctx.fillStyle = C.holeEdge; ctx.fillRect(row.hole.x, y, row.hole.w, PLATFORM_T);
-      } else {
-        ctx.fillStyle = C.ledgeEdge; ctx.fillRect(0, y, W, PLATFORM_T);
-        ctx.fillStyle = C.ledge; ctx.fillRect(0, y, W, PLATFORM_T - 3);
+      if (row.full) {
+        drawTile(0, y, W, baseT, false);
+      } else if (row.platform && !row.platform.broken) {
+        const plat = row.platform;
+        if (plat.crack) drawCrackTile(plat, y, baseT);
+        else drawTile(plat.x, y, plat.w, baseT, true);
       }
-      ctx.fillStyle = C.ledgeShade;
-      for (let x = 0; x < W; x += 16 * K) ctx.fillRect(x, y, 6 * K, 2 * K);
+      // per-row altitude marker along the cave wall, like the reference image
+      if (i > 0 && i < TOP_ROW) {
+        ctx.fillStyle = C.numGold;
+        ctx.fillText(String(i), 2 * K, Math.round(y - 4 * K));
+      }
     }
 
     for (const plat of state.bonusPlatforms) {
@@ -974,6 +1492,27 @@
       const vx = Math.round(v.x), vy = Math.round(v.y);
       ctx.fillStyle = C.vegLeaf; ctx.fillRect(vx - 2 * K, vy - 6 * K, 4 * K, 3 * K);
       ctx.fillStyle = C.veg; ctx.fillRect(vx - 4 * K, vy - 3 * K, 8 * K, 7 * K);
+    }
+
+    for (const d of state.durians) {
+      const dx = Math.round(d.x), dy = Math.round(d.y);
+      const r = 9 * K; // bigger, and unmistakably round
+      const wobble = Math.sin(d.spin) > 0 ? 1 : -1; // discrete tumble, no smooth rotation
+      ctx.fillStyle = C.durianSpike;
+      for (let s = 0; s < 8; s++) {
+        const ang = (s / 8) * Math.PI * 2 + d.spin * 0.3;
+        const sx = dx + Math.cos(ang) * r;
+        const sy = dy + Math.sin(ang) * r;
+        ctx.fillRect(Math.round(sx - 1.5 * K), Math.round(sy - 1.5 * K), 3 * K, 3 * K);
+      }
+      ctx.fillStyle = C.durian;
+      ctx.beginPath();
+      ctx.arc(dx + wobble, dy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = C.durianSpike;
+      ctx.beginPath();
+      ctx.arc(dx - r * 0.3, dy - r * 0.3, r * 0.35, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     for (const e of state.enemies) {
@@ -1029,6 +1568,8 @@
       ctx.fillText(s.text, bx + pad, by + boxH * 0.75);
     }
 
+    ctx.restore(); // back to screen-space for fixed overlays below
+
     if (state.roundComplete) {
       ctx.fillStyle = 'rgba(11,16,36,0.6)';
       ctx.fillRect(0, H / 2 - 40 * K, W, 80 * K);
@@ -1039,6 +1580,18 @@
       ctx.font = `${Math.round(15 * K)}px "VT323", monospace`;
       ctx.fillStyle = C.condor;
       ctx.fillText('new mountain incoming', W / 2, H / 2 + 22 * K);
+      ctx.textAlign = 'left';
+    }
+
+    if (state.eventBanner && !(state.eventBanner.life < 0.3 && Math.floor(state.eventBanner.life * 12) % 2 === 0)) {
+      const by = HUD_CLEARANCE + 14 * K;
+      ctx.font = `${Math.round(16 * K)}px "VT323", monospace`;
+      ctx.textAlign = 'center';
+      const tw = ctx.measureText(state.eventBanner.text).width;
+      ctx.fillStyle = 'rgba(11,16,36,0.75)';
+      ctx.fillRect(W / 2 - tw / 2 - 10 * K, by - 14 * K, tw + 20 * K, 22 * K);
+      ctx.fillStyle = state.eventBanner.color;
+      ctx.fillText(state.eventBanner.text, W / 2, by + 3 * K);
       ctx.textAlign = 'left';
     }
   }
@@ -1158,6 +1711,7 @@
     ctx.fillRect(eyeX, y + headH - 5 * K, eyeS, eyeS);
 
     drawAccessory(p, x, y, headH);
+    if (!swinging) drawHeldItem(p, x, y, headH);
 
     if (swinging) {
       // 2-cel swing: raised windup, then the strike held longer (weight on impact)
@@ -1184,6 +1738,31 @@
       case 'cap':
         ctx.fillRect(x + 1 * K, y - 3 * K, PLAYER_W - 2 * K, 4 * K);
         ctx.fillRect(p.facing > 0 ? x + PLAYER_W - 3 * K : x - 3 * K, y, 5 * K, 2 * K);
+        break;
+    }
+  }
+
+  function drawHeldItem(p, x, y, headH) {
+    if (!p.colors.held) return;
+    const hx = p.facing > 0 ? x + PLAYER_W : x - 11 * K;
+    const hy = y + headH + 2 * K;
+    switch (p.colors.held) {
+      case 'lollipop':
+        ctx.fillStyle = p.colors.dark;
+        ctx.fillRect(hx + 4 * K, hy, 3 * K, 14 * K); // stick
+        ctx.fillStyle = '#ff6bcb';
+        ctx.fillRect(hx, hy - 11 * K, 11 * K, 11 * K); // candy head
+        ctx.fillStyle = '#eef3ff';
+        ctx.fillRect(hx + 3 * K, hy - 8 * K, 3 * K, 3 * K); // swirl fleck
+        ctx.fillRect(hx + 6 * K, hy - 5 * K, 2 * K, 2 * K);
+        break;
+      case 'chicken':
+        ctx.fillStyle = '#8a5a2f';
+        ctx.fillRect(hx, hy, 13 * K, 9 * K); // meat
+        ctx.fillStyle = '#6a4322';
+        ctx.fillRect(hx, hy + 6 * K, 13 * K, 3 * K); // shading
+        ctx.fillStyle = '#e8d3a8';
+        ctx.fillRect(hx + (p.facing > 0 ? 9 * K : -6 * K), hy + 2 * K, 7 * K, 3 * K); // bone
         break;
     }
   }
@@ -1223,6 +1802,12 @@
     SFX.unlock();
     speedIndex = (speedIndex + 1) % SPEED_STEPS.length;
     speedBtn.textContent = SPEED_STEPS[speedIndex] + 'x';
+  });
+
+  const musicBtn = document.getElementById('music-btn');
+  musicBtn.addEventListener('click', () => {
+    const on = BGM.toggle();
+    musicBtn.textContent = '♪ ' + (on ? 'ON' : 'OFF');
   });
 
   g = newGame();
