@@ -200,7 +200,9 @@
   // A short original chiptune loop (lead + soft bass), off by default until the
   // player opts in. Not transcribed from any existing song — an original riff
   // in the same energetic 8-bit spirit.
-  const BGM = (() => {
+  // original procedural chiptune loop — retired as the active track (see
+  // BGM2 below) but kept in the codebase rather than deleted
+  const BGM1 = (() => {
     let playing = false, timer = null, idx = 0;
     const lead = [523, 659, 784, 659, 587, 784, 698, 587, 523, 659, 880, 784, 659, 587, 494, 523];
     const bass = [131, 0, 165, 0, 147, 0, 165, 0, 131, 0, 220, 0, 165, 0, 123, 0];
@@ -235,6 +237,22 @@
       toggle() { if (playing) this.stop(); else this.start(); return playing; },
     };
   })();
+
+  // active BGM track — a real audio file (bgm2.mp3) instead of the
+  // procedural loop above
+  const BGM2 = (() => {
+    const audio = new Audio('bgm2.mp3?v=1');
+    audio.loop = true;
+    audio.volume = 0.4;
+    let playing = false;
+    return {
+      isOn: () => playing,
+      start() { if (playing) return; SFX.unlock(); playing = true; audio.play().catch(() => { playing = false; }); },
+      stop() { playing = false; audio.pause(); },
+      toggle() { if (playing) this.stop(); else this.start(); return playing; },
+    };
+  })();
+  const BGM = BGM2;
 
   // ---- input ---------------------------------------------------------------
   const keys = { left: false, right: false, up: false, attack: false };
@@ -2081,9 +2099,11 @@
   });
 
   const musicBtn = document.getElementById('music-btn');
+  musicBtn.textContent = 'MUSIC OFF';
   musicBtn.classList.toggle('muted', true);
   musicBtn.addEventListener('click', () => {
     const on = BGM.toggle();
+    musicBtn.textContent = on ? 'MUSIC ON' : 'MUSIC OFF';
     musicBtn.classList.toggle('muted', !on);
   });
 
