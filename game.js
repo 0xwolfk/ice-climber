@@ -88,7 +88,7 @@
   // not guessed, so it stays correct if the overlay text/size ever changes)
   const HUD_CLEARANCE = (hudEl ? hudEl.offsetHeight : 50 * K) + 10 * K;
   const FOOTER_CLEARANCE = (footEl ? footEl.offsetHeight : 30 * K) + 10 * K;
-  const BONUS_ZONE = 82 * K; // headroom above the summit row for the condor bonus stage
+  const BONUS_ZONE = 100 * K; // headroom above the summit row for the condor bonus stage
   // the mountain is much taller than one screen — a real climb, not a single
   // static view — the camera (state.cameraY) follows the lead climber upward
   // to reveal it rather than the canvas growing or scrolling the page.
@@ -305,8 +305,7 @@
   const REACH = 95 * K;
   function buildMountain(difficulty) {
     difficulty = difficulty || 0;
-    const startParity = Math.random() < 0.5 ? 0 : 1;
-    const platW = clamp(112 - difficulty * 2.5, 68, 112) * K; // short, block-count-sized ledge
+    const widthScale = clamp(1 - difficulty * 0.012, 0.72, 1); // ledges shrink slowly as rounds escalate
     // moving floorboards are a real, common fixture from the very first climb —
     // not a rare high-difficulty variant — ramping only their speed with difficulty
     const driftChance = clamp(0.3 + difficulty * 0.03, 0.3, 0.55);
@@ -316,17 +315,41 @@
 
     const rows = [];
     let prevX = null; // near-edge chaining anchor from the row below
+    let lastGoingRight = Math.random() < 0.5;
+    let lastWasRest = false;
     for (let i = 0; i <= TOP_ROW; i++) {
       const y = START_Y - i * ROW_H;
       if (i === 0 || i === TOP_ROW) { rows.push({ y, full: true, platform: null }); prevX = null; continue; }
 
-      const goingRight = (i + startParity) % 2 === 1;
-      const w = platW;
+      // vary the rhythm row to row — a straight strict left-right-left-right
+      // alternation with one fixed platform size reads as one repeating
+      // pattern no matter how much the mountain is regenerated. Roll a real
+      // shape per row instead: an occasional full-width rest floor to break
+      // the beat, a wide easy ledge, a narrow tense reach, or a run of two
+      // platforms on the SAME side instead of always swinging back across.
+      const roll = Math.random();
+      const canRest = i > 1 && i < TOP_ROW - 1 && !lastWasRest;
+      if (canRest && roll < 0.14) {
+        rows.push({ y, full: true, platform: null });
+        prevX = null; lastWasRest = true;
+        continue;
+      }
+      lastWasRest = false;
+
+      let w, gapMax;
+      if (roll < 0.14 + 0.20) { w = rnd(52, 76) * K * widthScale; gapMax = REACH * 0.88; }        // tight, tense reach
+      else if (roll < 0.14 + 0.20 + 0.18) { w = rnd(118, 150) * K * widthScale; gapMax = REACH * 0.45; } // wide, easy breather
+      else { w = rnd(80, 116) * K * widthScale; gapMax = REACH * 0.7; }                          // normal
+
+      const sameSide = prevX !== null && Math.random() < 0.3;
+      const goingRight = sameSide ? lastGoingRight : !lastGoingRight;
+      lastGoingRight = goingRight;
+
       let x;
       if (prevX === null) {
         x = rnd(PAD, W - PAD - w);
       } else {
-        const gap = rnd(8 * K, REACH * 0.8); // always within reach, but still real horizontal distance
+        const gap = rnd(8 * K, gapMax); // always within reach, but still real horizontal distance
         x = goingRight ? prevX + gap : prevX - gap - w;
         x = clamp(x, PAD, W - PAD - w);
       }
@@ -341,6 +364,12 @@
       if (Math.random() < crackChance) {
         platform.crack = { timer: 0, maxTime: crackTime() };
       }
+      // stalactites hanging off the underside — jarred loose and fall the
+      // moment someone lands on the ice above them. Stored as an OFFSET from
+      // the platform's own x, not an absolute position, so they ride along
+      // with a drifting platform instead of hanging in empty air behind it.
+      platform.icicles = [];
+      for (let off = 6 * K; off < w - 4 * K; off += 18 * K) platform.icicles.push({ off, fallen: false });
       rows.push({ y, full: false, platform });
       // hand off the edge the NEXT row will jump FROM — since direction
       // strictly alternates, that's this platform's far edge relative to how
@@ -382,10 +411,11 @@
     // to W/2 with each step, so the final stretch to the trophy is generous
     // rather than a knife-edge landing
     const topY = rows[TOP_ROW].y;
-    const platW1 = 64 * K, platW2 = 52 * K;
+    const platW1 = 70 * K, platW2 = 58 * K, platW3 = 48 * K;
     const bonusPlatforms = [
-      { x: clamp(rnd(W * 0.28, W * 0.72) - platW1 / 2, PAD, W - PAD - platW1), y: topY - 30 * K, w: platW1, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(22, 32) * K },
-      { x: clamp(W / 2 + rnd(-40, 40) * K - platW2 / 2, PAD, W - PAD - platW2), y: topY - 58 * K, w: platW2, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(18, 26) * K },
+      { x: clamp(rnd(W * 0.26, W * 0.74) - platW1 / 2, PAD, W - PAD - platW1), y: topY - 26 * K, w: platW1, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(20, 30) * K },
+      { x: clamp(W / 2 + rnd(-70, 70) * K - platW2 / 2, PAD, W - PAD - platW2), y: topY - 50 * K, w: platW2, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(22, 32) * K },
+      { x: clamp(W / 2 + rnd(-36, 36) * K - platW3 / 2, PAD, W - PAD - platW3), y: topY - 74 * K, w: platW3, dir: Math.random() < 0.5 ? -1 : 1, speed: rnd(18, 26) * K },
     ];
     const condor = { x: W / 2, y: topY - BONUS_ZONE };
 
@@ -444,7 +474,7 @@
         break;
       case 'durianStorm':
         state.durianStormUntil = state.clock + 8; state.durianTimer = 0.4;
-        banner('DURIAN STORM INCOMING!', C.durian);
+        banner('DURIAN SEASON INCOMING!', C.durian);
         break;
       case 'collapse': {
         const row = 1 + Math.floor(Math.random() * (TOP_ROW - 1));
@@ -512,6 +542,7 @@
       condorClaimedBy: null,
       veggies: [], vegTimer: rnd(3, 5),
       durians: [], durianTimer: rnd(5, 8),
+      icicleShards: [],
       adamCommentTimer: rnd(14, 22),
       particles: [], popups: [], speech: [],
       players: [p1, p2, p3],
@@ -566,6 +597,7 @@
     state.condorClaimedBy = null;
     state.veggies = [];
     state.durians = [];
+    state.icicleShards = [];
     state.roundTime = 0;
     state.pressureY = H + 40;
     state.bearActive = false;
@@ -624,18 +656,22 @@
       if (threats[0] && threats[0].d < MELEE_RANGE) {
         return { left: false, right: false, jump: false, attack: true, attackTarget: threats[0].e };
       }
+      // no enemy in range — hammer the ice underfoot instead, same as the
+      // original game's core use for the tool, not just an enemy-only swing
+      return { left: false, right: false, jump: false, attack: true, attackTarget: 'ice' };
     }
     return { left: keys.left, right: keys.right, jump: keys.up, attack: false };
   }
 
   function decideBonus(state, p) {
-    const target = p.bonusStage >= 2 ? state.condor : state.bonusPlatforms[p.bonusStage];
+    const atCondor = p.bonusStage >= state.bonusPlatforms.length;
+    const target = atCondor ? state.condor : state.bonusPlatforms[p.bonusStage];
     if (p.human) return { left: keys.left, right: keys.right, jump: keys.up, attack: false };
     if (!p.grounded) {
       const dx = target.x - p.x;
       return { left: dx < -3, right: dx > 3, jump: false, attack: false };
     }
-    const cx = target.x + (target.w || 0) / 2 * (p.bonusStage >= 2 ? 0 : 1);
+    const cx = target.x + (target.w || 0) / 2 * (atCondor ? 0 : 1);
     const dx = cx - p.x;
     const input = { left: dx < -4, right: dx > 4, jump: false, attack: false };
     if (Math.abs(dx) < 10) input.jump = true;
@@ -898,6 +934,24 @@
     if (Math.random() < 0.35) say(state, attacker, 'attack');
   }
 
+  // hammering the ice you're standing on shatters it outright — a real,
+  // deliberate use for the tool beyond enemy combat, at the obvious cost
+  // that you fall through it too (the very next physics tick handles that
+  // automatically via the same rowHazardAt check a natural crack-break uses)
+  function smashPlatform(state, attacker) {
+    const row = state.rows[attacker.groundedRow];
+    if (row.full || !row.platform || row.platform.broken) { SFX.hit(); return; }
+    const plat = row.platform;
+    plat.broken = true;
+    plat.respawnTimer = rnd(2.2, 3.4);
+    if (plat.crack) plat.crack.timer = 0;
+    attacker.score += 15;
+    spawnParticles(state, attacker.x, attacker.y + PLAYER_H, C.ledgeBase, 14);
+    SFX.hit();
+    state.hitStop = Math.max(state.hitStop, 0.06);
+    say(state, attacker, 'breakIce');
+  }
+
   function respawnEnemy(state, e) {
     if (e.type === 'topi') {
       e.row = 1 + Math.floor(Math.random() * (TOP_ROW - 1));
@@ -913,6 +967,22 @@
     e.alive = true;
   }
 
+  // the icicle nearest where a climber actually landed shakes loose and falls
+  // — real, and only the one you disturbed, not the whole row at once
+  function shakeIcicles(state, row, x) {
+    const plat = row.platform;
+    if (!plat || !plat.icicles) return;
+    let nearest = null, bestD = Infinity;
+    for (const ic of plat.icicles) {
+      if (ic.fallen) continue;
+      const d = Math.abs(plat.x + ic.off - x);
+      if (d < bestD) { bestD = d; nearest = ic; }
+    }
+    if (!nearest || bestD > 26 * K) return;
+    nearest.fallen = true;
+    state.icicleShards.push({ x: plat.x + nearest.off + 1.5 * K, y: row.y + PLATFORM_T * 2.2, vy: 20 * K, spin: 0 });
+  }
+
   function updatePlatforms(state, dt) {
     state.rows.forEach((row, i) => {
       if (row.full || !row.platform) return;
@@ -925,6 +995,7 @@
           // screen — neighboring rows were placed reachable from homeX, and a
           // wholly new random spot could reintroduce an uncrossable gap
           p.x = clamp(p.homeX + rnd(-12, 12) * K, PAD, W - PAD - p.w);
+          for (const ic of p.icicles) ic.fallen = false; // regrown with the fresh ice
           p.broken = false;
           if (p.crack) p.crack.timer = 0;
         }
@@ -992,7 +1063,8 @@
     const input = decide(state, p, dt);
     if (input.attack) {
       p.attackTimer = 0.15;
-      defeatEnemy(state, input.attackTarget, p);
+      if (input.attackTarget === 'ice') smashPlatform(state, p);
+      else defeatEnemy(state, input.attackTarget, p);
       return;
     }
 
@@ -1042,6 +1114,7 @@
             p.y = row.y - PLAYER_H; p.vy = 0; p.grounded = true; p.groundedRow = i;
             bottom = p.y + PLAYER_H;
             landedRow = true;
+            if (!row.full && row.platform) shakeIcicles(state, row, p.x);
             if (p.lastJumpRow >= 0) {
               // did that jump actually gain a floor, or land back where it started?
               p.stuckCount = i > p.lastJumpRow ? 0 : p.stuckCount + 1;
@@ -1336,6 +1409,23 @@
       if (d.y > state.cameraY + H + 20 * K) state.durians.splice(i, 1);
     }
 
+    for (let i = state.icicleShards.length - 1; i >= 0; i--) {
+      const s = state.icicleShards[i];
+      s.vy += 500 * K * dt; // heavier, faster fall than a tumbling durian — it's a shard of ice, not fruit
+      s.y += s.vy * dt;
+      s.spin += dt * 8;
+      let hit = false;
+      for (const p of state.players) {
+        if (p.carried || p.doneThisRound || p.invuln > 0) continue;
+        if (Math.abs(wrapDelta(s.x, p.x, W)) < 10 * K && Math.abs(s.y - (p.y + PLAYER_H / 2)) < 14 * K) {
+          resetToBottom(state, p);
+          hit = true; break;
+        }
+      }
+      if (hit) { state.icicleShards.splice(i, 1); continue; }
+      if (s.y > state.cameraY + H + 20 * K) state.icicleShards.splice(i, 1);
+    }
+
     for (let i = state.particles.length - 1; i >= 0; i--) {
       const pt = state.particles[i];
       pt.life -= dt; pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.vy += 400 * dt;
@@ -1470,10 +1560,43 @@
       ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
     }
 
+    // a distant stalagmite layer at half scroll speed — real depth, not just
+    // empty dark bands between ledges — sitting behind everything else
+    ctx.save();
+    ctx.translate(0, -state.cameraY * 0.5);
+    // stepped pixel bands, not a smooth canvas path — a lineTo triangle
+    // anti-aliases its diagonal edges, which clashes with the hard-edged
+    // fillRect look everything else on screen uses
+    ctx.fillStyle = C.wallShade;
+    for (let i = 0; i < 26; i++) {
+      const bx = wrap(i * 137.7, W);
+      const baseY = i * 210 - 380;
+      const bw = 20 * K + (i % 3) * 8 * K;
+      const bh = 30 * K + (i % 4) * 16 * K;
+      const steps = 6;
+      const stepH = bh / steps;
+      for (let s = 0; s < steps; s++) {
+        const rowW = bw * (1 - s / steps) + 2 * K;
+        const rx = bx - rowW / 2;
+        const ry = baseY + bh - (s + 1) * stepH;
+        ctx.fillRect(Math.round(rx), Math.round(ry), Math.round(rowW), Math.round(stepH) + 1);
+      }
+    }
+    ctx.restore();
+
     // everything below is world-space and scrolls with the climb; the sky above
     // stays fixed, matching how the original game never scrolled its backdrop
     ctx.save();
     ctx.translate(0, -state.cameraY);
+
+    // slow drifting snow through the whole climb, not just the fixed starfield
+    // up top — the middle of a long ascent was otherwise just flat empty color
+    ctx.fillStyle = 'rgba(238,243,255,0.16)';
+    for (let i = 0; i < 22; i++) {
+      const sx = wrap(i * 97.3 + Math.sin(state.clock * 0.5 + i) * 14 * K, W);
+      const sy = wrap(i * 233.1 - state.clock * (10 + (i % 5) * 3), H * 2.4) + state.cameraY - H * 0.3;
+      ctx.fillRect(Math.round(sx), Math.round(sy), 2 * K, 2 * K);
+    }
 
     const rows = state.rows;
 
@@ -1513,6 +1636,16 @@
         const plat = row.platform;
         if (plat.crack) drawCrackTile(plat, y, baseT);
         else drawTile(plat.x, y, plat.w, baseT, true);
+        // stalactites hanging off the underside — jarred loose and fall when
+        // someone lands on the ice above; a short ledge in open air otherwise
+        // reads as bare and empty below it
+        ctx.fillStyle = C.ledgeEdge;
+        for (const ic of plat.icicles) {
+          if (ic.fallen) continue;
+          const icx = plat.x + ic.off;
+          const drop = (Math.sin(icx * 0.13 + i) * 0.5 + 0.5) * 7 * K + 4 * K;
+          ctx.fillRect(Math.round(icx), Math.round(y + baseT), Math.round(3 * K), Math.round(drop));
+        }
       }
       // per-row altitude marker along the cave wall, like the reference image
       if (i > 0 && i < TOP_ROW) {
@@ -1521,11 +1654,40 @@
       }
     }
 
+    // bonus stepping-stones match the rest of the mountain's ice-block look
+    // now instead of a bare flat rect — the summit shouldn't look cheaper
+    // than the climb that led to it
     for (const plat of state.bonusPlatforms) {
-      const px = Math.round(plat.x), py = Math.round(plat.y);
-      ctx.fillStyle = C.ceil; ctx.fillRect(px, py, plat.w, 6);
-      ctx.fillStyle = C.ceilShade; ctx.fillRect(px, py + 4, plat.w, 2);
+      drawTile(plat.x, plat.y, plat.w, baseT * 0.75, true);
     }
+
+    // a real podium under the trophy, not a condor floating bare in empty
+    // space — plus a small planted flag as the clear "you made it" beat
+    const podiumW = 74 * K;
+    const podiumX = state.condor.x - podiumW / 2;
+    const podiumY = state.condor.y + 22 * K;
+    drawTile(podiumX, podiumY, podiumW, baseT * 0.75, true);
+    const poleX = state.condor.x - podiumW * 0.28, poleTop = podiumY - 28 * K;
+    ctx.fillStyle = C.numGold;
+    ctx.fillRect(Math.round(poleX), Math.round(poleTop), 2 * K, 28 * K);
+    // stepped pennant, not a smooth lineTo path — same hard-pixel rule as
+    // the background stalagmites below
+    for (let s = 0; s < 5; s++) {
+      const rowW = (13 * K) * (1 - s / 5) + 2 * K;
+      ctx.fillRect(Math.round(poleX + 2 * K), Math.round(poleTop + s * 2 * K), Math.round(rowW), 2 * K);
+    }
+
+    // a slow ring of gold sparkle points behind the condor — a triumphant
+    // focal point instead of the trophy just sitting in flat dark sky
+    ctx.fillStyle = C.numGold;
+    for (let r = 0; r < 8; r++) {
+      const ang = (r / 8) * Math.PI * 2 + state.clock * 0.6;
+      if (Math.floor(state.clock * 2 + r) % 3 === 0) continue; // hard on/off twinkle, not a fade
+      const rx = state.condor.x + Math.cos(ang) * 34 * K;
+      const ry = state.condor.y + Math.sin(ang) * 22 * K;
+      ctx.fillRect(Math.round(rx), Math.round(ry), 2 * K, 2 * K);
+    }
+
     drawCondor(state.condor.x, state.condor.y, state.condorAnim.f);
 
     for (const v of state.veggies) {
@@ -1557,6 +1719,19 @@
       ctx.beginPath();
       ctx.ellipse(dx - rx * 0.3, dy - ry * 0.3, rx * 0.32, ry * 0.28, 0, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    for (const s of state.icicleShards) {
+      const sx = Math.round(s.x), sy = Math.round(s.y);
+      const wobble = Math.sin(s.spin) > 0 ? 1 : -1;
+      // stepped pixel shard, not a smooth lineTo path — same hard-edge rule
+      ctx.fillStyle = C.ledgeEdge;
+      for (let s = 0; s < 5; s++) {
+        const rowW = (6 * K) * (1 - s / 5) + 1 * K;
+        ctx.fillRect(Math.round(sx - rowW / 2 + wobble), Math.round(sy - 6 * K + s * 3 * K), Math.round(rowW), 3 * K);
+      }
+      ctx.fillStyle = C.ledge;
+      ctx.fillRect(sx - 1 * K, sy - 5 * K, 2 * K, 5 * K);
     }
 
     for (const e of state.enemies) {
